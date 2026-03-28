@@ -2,13 +2,13 @@ FROM python:3.12.10-slim
 
 WORKDIR /app
 
-# Copiar requirements e instalar dependencias
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copiar código fuente
 COPY heartbeat.py .
+COPY producer.py .
 COPY .env .
 
-# Ejecutar el servicio heartbeat
+EXPOSE 8080
+
 CMD ["python", "heartbeat.py"]
