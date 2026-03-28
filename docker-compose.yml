@@ -1,0 +1,16 @@
+services:
+  rabbitmq:
+    image: rabbitmq:3-management
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    environment:
+      RABBITMQ_DEFAULT_USER: planning_rabbitmq
+      RABBITMQ_DEFAULT_PASS: IsPl22
+
+  planning-service:
+    build: .
+    env_file:
+      - .env
+    depends_on:
+      - rabbitmq
