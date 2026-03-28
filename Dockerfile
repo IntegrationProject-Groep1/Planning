@@ -7,7 +7,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY heartbeat.py .
 COPY producer.py .
-COPY .env .
 
 EXPOSE 8080
 

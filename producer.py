@@ -2,7 +2,7 @@ import pika
 import os
 import logging
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from lxml import etree
 from dotenv import load_dotenv
 
@@ -14,15 +14,21 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # RabbitMQ connection settings
-RABBITMQ_USER = os.getenv('RABBITMQ_USER')
-RABBITMQ_PASS = os.getenv('RABBITMQ_PASS')
-RABBITMQ_HOST = os.getenv('RABBITMQ_HOST')
-RABBITMQ_PORT = int(os.getenv('RABBITMQ_PORT', 5672))
+RABBITMQ_HOST = os.getenv("RABBITMQ_HOST", "localhost")
+RABBITMQ_PORT = int(os.getenv("RABBITMQ_PORT", "5672"))
+RABBITMQ_USER = os.getenv("RABBITMQ_USER")
+RABBITMQ_PASS = os.getenv("RABBITMQ_PASS")
 
 # Exchange and routing key
-EXCHANGE_NAME = 'planning_exchange'
+EXCHANGE_NAME = "planning"
 ROUTING_KEY = 'session.created'
 XMLNS = "urn:integration:planning:v1"
+
+
+def _require_env(name: str, value: str | None) -> str:
+    if not value:
+        raise ValueError(f"Missing required environment variable: {name}")
+    return value
 
 
 def create_session_xml(
@@ -31,82 +37,62 @@ def create_session_xml(
     start_datetime: str,
     end_datetime: str,
     location: str,
-    speaker_name: str,
-    speaker_company: str,
-    session_type: str = "keynote",
-    max_attendees: int = 120
+    max_attendees: int = 120,
+    current_attendees: int = 0
 ) -> str:
-    root = etree.Element('message', xmlns=XMLNS)
+    """Create a session.created XML message with required header/body fields."""
+    root = etree.Element("message", xmlns=XMLNS)
 
-    header = etree.SubElement(root, 'header')
+    header = etree.SubElement(root, "header")
 
-    message_id_elem = etree.SubElement(header, 'message_id')
+    message_id_elem = etree.SubElement(header, "message_id")
     message_id_elem.text = str(uuid.uuid4())
 
-    timestamp_elem = etree.SubElement(header, 'timestamp')
-    timestamp_elem.text = datetime.utcnow().isoformat() + "Z"
+    timestamp_elem = etree.SubElement(header, "timestamp")
+    timestamp_elem.text = datetime.now(timezone.utc).isoformat()
 
-    source_elem = etree.SubElement(header, 'source')
-    source_elem.text = 'planning'
+    source_elem = etree.SubElement(header, "source")
+    source_elem.text = "planning"
 
-    type_elem = etree.SubElement(header, 'type')
-    type_elem.text = 'session_created'
+    type_elem = etree.SubElement(header, "type")
+    type_elem.text = "session_created"
 
-    version_elem = etree.SubElement(header, 'version')
-    version_elem.text = '1.0'
+    version_elem = etree.SubElement(header, "version")
+    version_elem.text = "1.0"
 
-    correlation_id_elem = etree.SubElement(header, 'correlation_id')
-    correlation_id_elem.text = f"corr-{uuid.uuid4()}"
+    correlation_id_elem = etree.SubElement(header, "correlation_id")
+    correlation_id_elem.text = str(uuid.uuid4())
 
-    body = etree.SubElement(root, 'body')
-    session = etree.SubElement(body, 'session')
+    body = etree.SubElement(root, "body")
 
-    session_id_elem = etree.SubElement(session, 'session_id')
+    session_id_elem = etree.SubElement(body, "session_id")
     session_id_elem.text = session_id
 
-    title_elem = etree.SubElement(session, 'title')
+    title_elem = etree.SubElement(body, "title")
     title_elem.text = title
 
-    start_elem = etree.SubElement(session, 'start_datetime')
+    start_elem = etree.SubElement(body, "start_datetime")
     start_elem.text = start_datetime
 
-    end_elem = etree.SubElement(session, 'end_datetime')
+    end_elem = etree.SubElement(body, "end_datetime")
     end_elem.text = end_datetime
 
-    location_elem = etree.SubElement(session, 'location')
+    location_elem = etree.SubElement(body, "location")
     location_elem.text = location
 
-    type_session_elem = etree.SubElement(session, 'session_type')
-    type_session_elem.text = session_type
+    type_session_elem = etree.SubElement(body, "session_type")
+    type_session_elem.text = "keynote"
 
-    status_elem = etree.SubElement(session, 'status')
-    status_elem.text = 'published'
+    status_elem = etree.SubElement(body, "status")
+    status_elem.text = "published"
 
-    max_attendees_elem = etree.SubElement(session, 'max_attendees')
+    max_attendees_elem = etree.SubElement(body, "max_attendees")
     max_attendees_elem.text = str(max_attendees)
 
-    current_attendees_elem = etree.SubElement(session, 'current_attendees')
-    current_attendees_elem.text = '0'
+    current_attendees_elem = etree.SubElement(body, "current_attendees")
+    current_attendees_elem.text = str(current_attendees)
 
-    speakers = etree.SubElement(session, 'speakers')
-    speaker = etree.SubElement(speakers, 'speaker')
-
-    speaker_id_elem = etree.SubElement(speaker, 'speaker_id')
-    speaker_id_elem.text = f"crm-{uuid.uuid4()}"
-
-    speaker_name_elem = etree.SubElement(speaker, 'name')
-    speaker_name_elem.text = speaker_name
-
-    speaker_company_elem = etree.SubElement(speaker, 'company')
-    speaker_company_elem.text = speaker_company
-
-    outlook_elem = etree.SubElement(session, 'outlook_event_id')
-    outlook_elem.text = f"AAMkADk2{uuid.uuid4().hex[:20]}=="
-
-    created_at_elem = etree.SubElement(session, 'created_at')
-    created_at_elem.text = datetime.utcnow().isoformat() + "Z"
-
-    return etree.tostring(root, encoding='unicode', pretty_print=True)
+    return etree.tostring(root, encoding="unicode", pretty_print=True)
 
 
 def validate_xml(xml_string: str) -> bool:
@@ -120,7 +106,10 @@ def validate_xml(xml_string: str) -> bool:
 
 def send_message(xml_message: str):
     try:
-        credentials = pika.PlainCredentials(RABBITMQ_USER, RABBITMQ_PASS)
+        user = _require_env("RABBITMQ_USER", RABBITMQ_USER)
+        password = _require_env("RABBITMQ_PASS", RABBITMQ_PASS)
+
+        credentials = pika.PlainCredentials(user, password)
 
         params = pika.ConnectionParameters(
             host=RABBITMQ_HOST,
@@ -149,7 +138,7 @@ def send_message(xml_message: str):
             routing_key=ROUTING_KEY,
             body=xml_message,
             properties=pika.BasicProperties(
-                content_type='application/xml',
+                content_type="application/xml",
                 delivery_mode=2
             )
         )
@@ -160,6 +149,12 @@ def send_message(xml_message: str):
 
     except pika.exceptions.AMQPConnectionError as e:
         logger.error(f"Failed to connect to RabbitMQ: {e}")
+        return False
+    except ValueError as e:
+        logger.error(
+            "%s. Set RABBITMQ_USER and RABBITMQ_PASS in your environment or .env file.",
+            e,
+        )
         return False
     except Exception as e:
         logger.error(f"Error sending message: {e}")
@@ -172,10 +167,7 @@ def main():
         title="Keynote: AI in de zorgsector",
         start_datetime="2026-05-15T14:00:00Z",
         end_datetime="2026-05-15T15:00:00Z",
-        location="Aula A - Campus Jette",
-        speaker_name="Dr. Jan Peeters",
-        speaker_company="Accenture Belgium",
-        session_type="keynote",
+        location="online",
         max_attendees=120
     )
 
