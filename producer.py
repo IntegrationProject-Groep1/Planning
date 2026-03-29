@@ -129,7 +129,7 @@ def send_message(xml_message: str):
         )
 
         if not validate_xml(xml_message):
-            logger.error("Cannot send invalid XML message")
+            logger.error("Cannot send invalid XML message\nInhoud:\n%s", xml_message)
             connection.close()
             return False
 
@@ -157,7 +157,7 @@ def send_message(xml_message: str):
         )
         return False
     except Exception as e:
-        logger.error(f"Error sending message: {e}")
+        logger.error("Error sending message: %s", e, exc_info=True)
         return False
 
 
