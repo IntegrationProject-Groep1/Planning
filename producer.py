@@ -19,15 +19,9 @@ RABBITMQ_PORT = int(os.getenv("RABBITMQ_PORT", "5672"))
 RABBITMQ_USER = os.getenv("RABBITMQ_USER")
 RABBITMQ_PASS = os.getenv("RABBITMQ_PASS")
 
-<<<<<<< HEAD
-# Exchange and routing key
-EXCHANGE_NAME = "planning"
-ROUTING_KEY = 'session.created'
-=======
 # Exchange and routing key (with planning prefix per new infra standard)
 EXCHANGE_NAME = 'planning.exchange'
 ROUTING_KEY = 'planning.session.created'
->>>>>>> feature/producer
 XMLNS = "urn:integration:planning:v1"
 
 

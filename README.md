@@ -49,8 +49,6 @@ Open the RabbitMQ management panel:
 ```
 http://localhost:15672
 ```
-- Username: `planning_rabbitmq`
-- Password: `IsPl22`
 
 You should see:
 - Exchange `heartbeat` (type: topic)
