@@ -8,7 +8,7 @@ import socket
 
 load_dotenv()
 
-# Timestamp de inicio del servicio
+# Service start timestamp
 SERVICE_START_TIME = time.time()
 
 def get_connection():
@@ -24,7 +24,7 @@ def get_connection():
     return pika.BlockingConnection(parameters)
 
 def check_outlook_connection():
-    """Verifica conectabilidad a Outlook API (básico)."""
+    """Checks connectivity to Outlook API (basic)."""
     try:
         socket.gethostbyname('outlook.office365.com')
         return True
@@ -32,7 +32,7 @@ def check_outlook_connection():
         return False
 
 def get_current_uptime():
-    """Retorna uptime en segundos desde que inició el servicio."""
+    """Returns uptime in seconds since the service started."""
     return int(time.time() - SERVICE_START_TIME)
 
 def build_heartbeat_xml():
