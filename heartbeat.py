@@ -11,14 +11,28 @@ load_dotenv()
 # Service start timestamp
 SERVICE_START_TIME = time.time()
 
+RABBITMQ_HOST = os.getenv("RABBITMQ_HOST", "localhost")
+RABBITMQ_PORT = int(os.getenv("RABBITMQ_PORT", "5672"))
+RABBITMQ_USER = os.getenv("RABBITMQ_USER")
+RABBITMQ_PASS = os.getenv("RABBITMQ_PASS")
+
+
+def _require_env(name: str, value: str | None) -> str:
+    if not value:
+        raise ValueError(
+            f"Missing required environment variable: {name}. "
+            "Set it in your .env file."
+        )
+    return value
+
 def get_connection():
     credentials = pika.PlainCredentials(
-        os.getenv("RABBITMQ_USER"),
-        os.getenv("RABBITMQ_PASS")
+        _require_env("RABBITMQ_USER", RABBITMQ_USER),
+        _require_env("RABBITMQ_PASS", RABBITMQ_PASS)
     )
     parameters = pika.ConnectionParameters(
-        host=os.getenv("RABBITMQ_HOST"),
-        port=int(os.getenv("RABBITMQ_PORT")),
+        host=RABBITMQ_HOST,
+        port=RABBITMQ_PORT,
         credentials=credentials
     )
     return pika.BlockingConnection(parameters)
