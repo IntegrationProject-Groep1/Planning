@@ -12,15 +12,16 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      # Step 1: Check out the repository code
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # Step 2: Run your tests here.
-      # Replace the echo commands with your actual test commands (e.g. npm test, pytest, go test ./...).
-      # If this step fails, the pipeline stops and no image will be built.
-      - name: Run Tests (Placeholder)
-        run: |
-          echo "Beste teams: Zet hier jullie eigen test-commando's!"
-          echo "Als deze falen, zal Infra de image NIET bouwen."
-          exit 0
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt pytest
+
+      - name: Run tests
+        run: pytest tests/ -v
