@@ -30,10 +30,17 @@ def _require_env(name: str, value: str | None) -> str:
     return value
 
 
+def _strip_ns(root: etree._Element) -> etree._Element:
+    """Remove namespace prefixes from all element tags so find('header') works."""
+    for elem in root.iter():
+        elem.tag = etree.QName(elem.tag).localname
+    return root
+
+
 def validate_xml(body: bytes) -> etree._Element | None:
     """Parse and validate incoming XML. Returns root element or None on failure."""
     try:
-        root = etree.fromstring(body)
+        root = _strip_ns(etree.fromstring(body))
     except etree.XMLSyntaxError as e:
         logger.error("Malformed XML: %s", e)
         return None
