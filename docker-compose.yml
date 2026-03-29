@@ -1,0 +1,30 @@
+services:
+  rabbitmq:
+    image: rabbitmq:3.12-management
+    container_name: planning_rabbitmq
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASS}
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    networks:
+      - planning_network
+
+  planning-service:
+    build: .
+    env_file:
+      - .env
+    depends_on:
+      - rabbitmq
+    networks:
+      - planning_network
+
+volumes:
+  rabbitmq_data:
+
+networks:
+  planning_network:
+    driver: bridge
