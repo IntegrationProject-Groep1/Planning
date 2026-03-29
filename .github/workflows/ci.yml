@@ -1,0 +1,27 @@
+name: CI Pipeline
+
+# Triggers: runs on push/PR to main, dev, prod branches, and on version tags (e.g. v1.0.0)
+on:
+  push:
+    branches: [ "main", "dev", "prod" ]
+    tags: [ "v*" ]
+  pull_request:
+    branches: [ "main", "dev", "prod" ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt pytest
+
+      - name: Run tests
+        run: pytest tests/ -v
