@@ -11,6 +11,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY consumer.py .
 COPY producer.py .
 
-EXPOSE 8080
+EXPOSE 30050
 
 CMD ["python", "consumer.py"]

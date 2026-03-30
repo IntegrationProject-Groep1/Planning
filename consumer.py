@@ -1,6 +1,8 @@
 import pika
 import os
 import logging
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from lxml import etree
 from dotenv import load_dotenv
 
@@ -142,5 +144,22 @@ def start_consumer():
     channel.start_consuming()
 
 
+def start_health_server(port: int = 30050):
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"ok")
+
+        def log_message(self, format, *args):
+            pass  # stil houden in logs
+
+    server = HTTPServer(("0.0.0.0", port), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    logger.info("Health endpoint gestart op poort %d", port)
+
+
 if __name__ == "__main__":
+    start_health_server()
     start_consumer()
