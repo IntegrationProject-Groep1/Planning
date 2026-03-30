@@ -14,12 +14,64 @@ services:
     networks:
       - planning_network
 
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - planning_network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD}
+      PGADMIN_SERVER_JSON_FILE: /pgadmin4/servers.json
+    volumes:
+      - ./pgadmin/servers.json:/pgadmin4/servers.json:ro
+      - ./pgadmin/pgpass:/pgpass:ro
+    ports:
+      - "5050:80"
+    depends_on:
+      - db
+    networks:
+      - planning_network
+
+  migrate:
+    image: postgres:16-alpine
+    env_file:
+      - ${ENV_FILE:-.env}
+    volumes:
+      - ./migrations:/migrations:ro
+    command: >
+      sh -c "psql postgresql://$${POSTGRES_USER}:$${POSTGRES_PASSWORD}@db:5432/$${POSTGRES_DB} -f /migrations/001_initial.sql && echo 'Migration done.'"
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - planning_network
+    restart: "no"
+
   planning-service:
     build: .
     env_file:
       - ${ENV_FILE:-.env}
     ports:
       - "30050:30050"
+    depends_on:
+      - db
+      - migrate
     networks:
       - planning_network
 
@@ -37,6 +89,7 @@ services:
 
 volumes:
   rabbitmq_data:
+  postgres_data:
 
 networks:
   planning_network:
