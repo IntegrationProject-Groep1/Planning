@@ -1,0 +1,43 @@
+services:
+  rabbitmq:
+    image: rabbitmq:3.12-management
+    container_name: planning_rabbitmq
+    profiles: [local]
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASS}
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    networks:
+      - planning_network
+
+  planning-service:
+    build: .
+    env_file:
+      - ${ENV_FILE:-.env}
+    ports:
+      - "30050:30050"
+    networks:
+      - planning_network
+
+  sidecar:
+    image: ghcr.io/integrationproject-groep1/heartbeat:latest
+    env_file:
+      - ${ENV_FILE:-.env}
+    environment:
+      - SYSTEM_NAME=planning
+      - TARGETS=planning-service:30050
+    depends_on:
+      - planning-service
+    networks:
+      - planning_network
+
+volumes:
+  rabbitmq_data:
+
+networks:
+  planning_network:
+    driver: bridge
