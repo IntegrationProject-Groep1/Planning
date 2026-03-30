@@ -1,13 +1,16 @@
 FROM python:3.12.10-slim
 
+LABEL org.opencontainers.image.source="https://github.com/IntegrationProject-Groep1/infra"
+
+
 WORKDIR /app
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY heartbeat.py .
+COPY consumer.py .
 COPY producer.py .
 
 EXPOSE 8080
 
-CMD ["python", "heartbeat.py"]
+CMD ["python", "consumer.py"]

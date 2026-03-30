@@ -22,6 +22,20 @@ services:
     networks:
       - planning_network
 
+  sidecar:
+    image: ghcr.io/integrationproject-groep1/heartbeat:latest
+    environment:
+      - SYSTEM_NAME=planning
+      - TARGETS=planning-service:8080
+      - RABBITMQ_HOST=${RABBITMQ_HOST}
+      - RABBITMQ_USER=${RABBITMQ_USER}
+      - RABBITMQ_PASS=${RABBITMQ_PASS}
+      - RABBITMQ_VHOST=${RABBITMQ_VHOST}
+    depends_on:
+      - planning-service
+    networks:
+      - planning_network
+
 volumes:
   rabbitmq_data:
 
