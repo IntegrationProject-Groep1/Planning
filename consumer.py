@@ -4,6 +4,8 @@ import logging
 import threading
 import json
 import uuid
+from functools import lru_cache
+from pathlib import Path
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import urlparse
@@ -42,6 +44,13 @@ REQUIRED_BODY_FIELDS_BY_TYPE = {
     "session_deleted": {"session_id"},
     "session_view_request": set(),
 }
+_XSD_BY_TYPE = {
+    "calendar.invite": "calendar_invite.xsd",
+    "session_created": "session_created.xsd",
+    "session_updated": "session_updated.xsd",
+    "session_deleted": "session_deleted.xsd",
+    "session_view_request": "session_view_request.xsd",
+}
 
 _SESSIONS: dict[str, dict[str, str | int]] = {}
 _SESSIONS_LOCK = threading.Lock()
@@ -60,12 +69,42 @@ def _strip_ns(root: etree._Element) -> etree._Element:
     return root
 
 
+@lru_cache(maxsize=None)
+def _load_schema(schema_filename: str) -> etree.XMLSchema:
+    schema_path = Path(__file__).resolve().parent / "xsd" / schema_filename
+    with schema_path.open("rb") as f:
+        return etree.XMLSchema(etree.parse(f))
+
+
 def validate_xml(body: bytes) -> etree._Element | None:
     """Parse and validate incoming XML. Returns root element or None on failure."""
     try:
-        root = _strip_ns(etree.fromstring(body))
+        root_with_ns = etree.fromstring(body)
     except etree.XMLSyntaxError as e:
         logger.error("Malformed XML: %s", e)
+        return None
+
+    root = _strip_ns(etree.fromstring(body))
+
+    message_type = root.findtext("header/type", default="")
+    schema_filename = _XSD_BY_TYPE.get(message_type)
+    if schema_filename is None:
+        logger.error("Unsupported message type: %s", message_type)
+        return None
+
+    try:
+        schema = _load_schema(schema_filename)
+    except (OSError, etree.XMLSchemaParseError) as e:
+        logger.error("Could not load/parse XSD schema '%s': %s", schema_filename, e)
+        return None
+
+    if not schema.validate(root_with_ns):
+        schema_error = schema.error_log.last_error
+        logger.error(
+            "XML failed XSD validation for type '%s': %s",
+            message_type,
+            schema_error,
+        )
         return None
 
     header = root.find("header")
@@ -82,11 +121,7 @@ def validate_xml(body: bytes) -> etree._Element | None:
         return None
 
     body_tags = {child.tag for child in message_body}
-    message_type = header.findtext("type", default="")
     required_body_fields = REQUIRED_BODY_FIELDS_BY_TYPE.get(message_type)
-    if required_body_fields is None:
-        logger.error("Unsupported message type: %s", message_type)
-        return None
 
     missing_body = required_body_fields - body_tags
     if missing_body:

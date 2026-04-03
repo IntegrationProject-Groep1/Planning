@@ -253,6 +253,20 @@ All XML field names are **snake_case**, enum values are **lowercase**. This is m
 </message>
 ```
 
+### XSD schemas used by the service
+
+- `xsd/session_created.xsd`
+- `xsd/session_updated.xsd`
+- `xsd/session_deleted.xsd`
+- `xsd/session_view_request.xsd`
+- `xsd/session_view_response.xsd`
+- `xsd/calendar_invite.xsd`
+
+Validation behavior:
+
+- `producer.py`: validates known outgoing message types (`session_created`, `session_updated`, `session_deleted`, `session_view_request`) against their XSD before publish.
+- `consumer.py`: validates incoming messages (`calendar.invite`, `session_created`, `session_updated`, `session_deleted`, `session_view_request`) against their XSD before processing.
+
 ---
 
 ## RabbitMQ Configuration
@@ -261,7 +275,7 @@ All XML field names are **snake_case**, enum values are **lowercase**. This is m
 |---|---|---|
 | **Exchange** | `calendar.exchange` | `planning.exchange` |
 | **Queue** | `planning.calendar.invite` | — |
-| **Routing key(s)** | `calendar.invite`, `planning.session.updated`, `planning.session.deleted` | `planning.session.created`, `planning.session.updated`, `planning.session.deleted` |
+| **Routing key(s)** | `calendar.invite`, `planning.session.created`, `planning.session.updated`, `planning.session.deleted`, `planning.session.view.request` | `planning.session.created`, `planning.session.updated`, `planning.session.deleted`, `planning.session.view.request`, `planning.session.view.response` |
 | **Type** | topic | topic |
 
 **Broker:**
