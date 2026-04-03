@@ -2,7 +2,7 @@ import pytest
 from unittest.mock import MagicMock, patch
 from lxml import etree
 
-from producer import create_session_xml, validate_xml, send_message
+from producer import create_session_xml, create_session_update_xml, create_session_delete_xml, validate_xml, send_message, ROUTING_KEY, ROUTING_KEY_UPDATED, ROUTING_KEY_DELETED
 
 NS = "urn:integration:planning:v1"
 
@@ -148,3 +148,90 @@ class TestSendMessage:
     def test_missing_credentials_returns_false(self):
         result = send_message(self._make_valid_xml())
         assert result is False
+
+    @patch("producer.pika.BlockingConnection")
+    @patch("producer.RABBITMQ_USER", "user")
+    @patch("producer.RABBITMQ_PASS", "pass")
+    def test_send_uses_custom_routing_key(self, mock_conn_cls):
+        mock_channel = MagicMock()
+        mock_conn_cls.return_value.channel.return_value = mock_channel
+
+        send_message(self._make_valid_xml(), routing_key=ROUTING_KEY_UPDATED)
+
+        _, kwargs = mock_channel.basic_publish.call_args
+        assert kwargs["routing_key"] == ROUTING_KEY_UPDATED
+
+
+class TestCreateSessionUpdateXml:
+    def _make(self, **kwargs):
+        defaults = dict(
+            session_id="sess-002",
+            title="Update Test",
+            start_datetime="2026-05-15T14:00:00Z",
+            end_datetime="2026-05-15T15:00:00Z",
+            location="online",
+        )
+        defaults.update(kwargs)
+        return create_session_update_xml(**defaults)
+
+    def test_returns_valid_xml(self):
+        root = _parse(self._make())
+        assert root.tag == "message"
+
+    def test_type_is_session_updated(self):
+        root = _parse(self._make())
+        assert root.find("header").findtext("type") == "session_updated"
+
+    def test_source_is_planning(self):
+        root = _parse(self._make())
+        assert root.find("header").findtext("source") == "planning"
+
+    def test_required_header_fields(self):
+        root = _parse(self._make())
+        header = root.find("header")
+        for field in ("message_id", "timestamp", "source", "type", "version", "correlation_id"):
+            assert header.find(field) is not None, f"Missing header field: {field}"
+
+    def test_required_body_fields(self):
+        root = _parse(self._make())
+        body = root.find("body")
+        for field in ("session_id", "title", "start_datetime", "end_datetime", "location", "session_type", "status", "max_attendees", "current_attendees"):
+            assert body.find(field) is not None, f"Missing body field: {field}"
+
+    def test_field_values(self):
+        root = _parse(self._make(session_id="sess-002", title="Updated Keynote", max_attendees=80))
+        body = root.find("body")
+        assert body.findtext("session_id") == "sess-002"
+        assert body.findtext("title") == "Updated Keynote"
+        assert body.findtext("max_attendees") == "80"
+
+
+class TestCreateSessionDeleteXml:
+    def test_returns_valid_xml(self):
+        root = _parse(create_session_delete_xml("sess-del-001"))
+        assert root.tag == "message"
+
+    def test_type_is_session_deleted(self):
+        root = _parse(create_session_delete_xml("sess-del-001"))
+        assert root.find("header").findtext("type") == "session_deleted"
+
+    def test_source_is_planning(self):
+        root = _parse(create_session_delete_xml("sess-del-001"))
+        assert root.find("header").findtext("source") == "planning"
+
+    def test_required_header_fields(self):
+        root = _parse(create_session_delete_xml("sess-del-001"))
+        header = root.find("header")
+        for field in ("message_id", "timestamp", "source", "type", "version", "correlation_id"):
+            assert header.find(field) is not None, f"Missing header field: {field}"
+
+    def test_body_contains_session_id(self):
+        root = _parse(create_session_delete_xml("sess-del-001"))
+        body = root.find("body")
+        assert body is not None
+        assert body.findtext("session_id") == "sess-del-001"
+
+    def test_body_only_contains_session_id(self):
+        root = _parse(create_session_delete_xml("sess-del-001"))
+        body_children = [child.tag for child in root.find("body")]
+        assert body_children == ["session_id"]
