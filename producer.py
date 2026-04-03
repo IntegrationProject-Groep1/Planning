@@ -24,6 +24,8 @@ EXCHANGE_NAME = 'planning.exchange'
 ROUTING_KEY_CREATED = 'planning.session.created'
 ROUTING_KEY_UPDATED = 'planning.session.updated'
 ROUTING_KEY_DELETED = 'planning.session.deleted'
+ROUTING_KEY_VIEW_REQUEST = 'planning.session.view.request'
+ROUTING_KEY_VIEW_RESPONSE = 'planning.session.view.response'
 XMLNS = "urn:integration:planning:v1"
 
 
@@ -146,6 +148,16 @@ def create_session_deleted_xml(
         etree.SubElement(body, "reason").text = reason
     if deleted_by:
         etree.SubElement(body, "deleted_by").text = deleted_by
+
+    return etree.tostring(root, encoding="unicode", pretty_print=True)
+
+
+def create_session_view_request_xml(session_id: str | None = None) -> str:
+    """Create a session.view.request XML message (single session or all sessions)."""
+    root, body = _build_message_root("session_view_request")
+
+    if session_id:
+        etree.SubElement(body, "session_id").text = session_id
 
     return etree.tostring(root, encoding="unicode", pretty_print=True)
 
