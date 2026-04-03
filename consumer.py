@@ -19,11 +19,22 @@ RABBITMQ_VHOST = os.getenv("RABBITMQ_VHOST", "/")
 
 # Exchange published by the sending team; queue prefixed with our team name
 EXCHANGE_NAME = os.getenv("CALENDAR_EXCHANGE", "calendar.exchange")
-ROUTING_KEY = "calendar.invite"
+ROUTING_KEYS = [
+    key.strip()
+    for key in os.getenv(
+        "ROUTING_KEYS",
+        "calendar.invite,planning.session.updated,planning.session.deleted",
+    ).split(",")
+    if key.strip()
+]
 QUEUE_NAME = "planning.calendar.invite"
 
 REQUIRED_HEADER_FIELDS = {"message_id", "timestamp", "source", "type"}
-REQUIRED_BODY_FIELDS = {"session_id", "title", "start_datetime", "end_datetime"}
+REQUIRED_BODY_FIELDS_BY_TYPE = {
+    "calendar.invite": {"session_id", "title", "start_datetime", "end_datetime"},
+    "session_updated": {"session_id", "title", "start_datetime", "end_datetime"},
+    "session_deleted": {"session_id"},
+}
 
 
 def _require_env(name: str, value: str | None) -> str:
@@ -61,7 +72,13 @@ def validate_xml(body: bytes) -> etree._Element | None:
         return None
 
     body_tags = {child.tag for child in message_body}
-    missing_body = REQUIRED_BODY_FIELDS - body_tags
+    message_type = header.findtext("type", default="")
+    required_body_fields = REQUIRED_BODY_FIELDS_BY_TYPE.get(message_type)
+    if required_body_fields is None:
+        logger.error("Unsupported message type: %s", message_type)
+        return None
+
+    missing_body = required_body_fields - body_tags
     if missing_body:
         logger.error("Missing required body fields: %s", missing_body)
         return None
@@ -83,24 +100,67 @@ def handle_calendar_invite(root: etree._Element):
     location = body.findtext("location", default="")
 
     logger.info(
-        "calendar.invite ontvangen | message_id=%s | source=%s | session_id=%s | title=%s | %s → %s | location=%s",
+        "calendar.invite received | message_id=%s | source=%s | session_id=%s | title=%s | %s -> %s | location=%s",
         message_id, source, session_id, title, start_datetime, end_datetime, location,
     )
 
 
+def handle_session_updated(root: etree._Element):
+    """Process a validated session_updated message."""
+    header = root.find("header")
+    body = root.find("body")
+
+    logger.info(
+        "session_updated received | message_id=%s | source=%s | session_id=%s | title=%s | %s -> %s",
+        header.findtext("message_id"),
+        header.findtext("source"),
+        body.findtext("session_id"),
+        body.findtext("title"),
+        body.findtext("start_datetime"),
+        body.findtext("end_datetime"),
+    )
+
+
+def handle_session_deleted(root: etree._Element):
+    """Process a validated session_deleted message."""
+    header = root.find("header")
+    body = root.find("body")
+
+    logger.info(
+        "session_deleted received | message_id=%s | source=%s | session_id=%s | reason=%s | deleted_by=%s",
+        header.findtext("message_id"),
+        header.findtext("source"),
+        body.findtext("session_id"),
+        body.findtext("reason", default=""),
+        body.findtext("deleted_by", default=""),
+    )
+
+
 def on_message(channel, method, properties, body: bytes):
-    logger.info("Bericht ontvangen op routing key '%s'", method.routing_key)
+    logger.info("Message received on routing key '%s'", method.routing_key)
 
     root = validate_xml(body)
     if root is None:
         logger.error(
-            "Ongeldig bericht — wordt geweigerd (nack, no requeue)\nInhoud:\n%s",
+            "Invalid message - rejected (nack, no requeue)\nPayload:\n%s",
             body.decode("utf-8", errors="replace"),
         )
         channel.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
         return
 
-    handle_calendar_invite(root)
+    message_type = root.find("header").findtext("type", default="")
+
+    if message_type == "calendar.invite":
+        handle_calendar_invite(root)
+    elif message_type == "session_updated":
+        handle_session_updated(root)
+    elif message_type == "session_deleted":
+        handle_session_deleted(root)
+    else:
+        logger.error("Unsupported message type after validation: %s", message_type)
+        channel.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
+        return
+
     channel.basic_ack(delivery_tag=method.delivery_tag)
 
 
@@ -128,18 +188,19 @@ def start_consumer():
     )
 
     channel.queue_declare(queue=QUEUE_NAME, durable=True)
-    channel.queue_bind(
-        queue=QUEUE_NAME,
-        exchange=EXCHANGE_NAME,
-        routing_key=ROUTING_KEY,
-    )
+    for routing_key in ROUTING_KEYS:
+        channel.queue_bind(
+            queue=QUEUE_NAME,
+            exchange=EXCHANGE_NAME,
+            routing_key=routing_key,
+        )
 
     channel.basic_qos(prefetch_count=1)
     channel.basic_consume(queue=QUEUE_NAME, on_message_callback=on_message)
 
     logger.info(
-        "Consumer gestart | exchange=%s | queue=%s | routing_key=%s | vhost=%s",
-        EXCHANGE_NAME, QUEUE_NAME, ROUTING_KEY, RABBITMQ_VHOST,
+        "Consumer started | exchange=%s | queue=%s | routing_keys=%s | vhost=%s",
+        EXCHANGE_NAME, QUEUE_NAME, ROUTING_KEYS, RABBITMQ_VHOST,
     )
     channel.start_consuming()
 
@@ -152,12 +213,12 @@ def start_health_server(port: int = 30050):
             self.wfile.write(b"ok")
 
         def log_message(self, format, *args):
-            pass  # stil houden in logs
+            pass  # keep HTTP server requests out of service logs
 
     server = HTTPServer(("0.0.0.0", port), Handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
-    logger.info("Health endpoint gestart op poort %d", port)
+    logger.info("Health endpoint started on port %d", port)
 
 
 if __name__ == "__main__":

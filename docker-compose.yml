@@ -25,6 +25,7 @@ services:
 
   sidecar:
     image: ghcr.io/integrationproject-groep1/heartbeat:latest
+    profiles: [heartbeat]
     env_file:
       - ${ENV_FILE:-.env}
     environment:

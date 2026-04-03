@@ -32,6 +32,42 @@ def _make_valid_body(
     return xml.encode("utf-8")
 
 
+def _make_updated_body() -> bytes:
+    xml = """<message xmlns="urn:integration:planning:v1">
+        <header>
+            <message_id>msg-upd-001</message_id>
+            <timestamp>2026-05-15T09:00:00Z</timestamp>
+            <source>frontend</source>
+            <type>session_updated</type>
+        </header>
+        <body>
+            <session_id>sess-001</session_id>
+            <title>Updated session</title>
+            <start_datetime>2026-05-15T16:00:00Z</start_datetime>
+            <end_datetime>2026-05-15T17:00:00Z</end_datetime>
+            <location>online</location>
+        </body>
+    </message>"""
+    return xml.encode("utf-8")
+
+
+def _make_deleted_body() -> bytes:
+    xml = """<message xmlns="urn:integration:planning:v1">
+        <header>
+            <message_id>msg-del-001</message_id>
+            <timestamp>2026-05-15T09:00:00Z</timestamp>
+            <source>frontend</source>
+            <type>session_deleted</type>
+        </header>
+        <body>
+            <session_id>sess-001</session_id>
+            <reason>cancelled</reason>
+            <deleted_by>planner</deleted_by>
+        </body>
+    </message>"""
+    return xml.encode("utf-8")
+
+
 class TestValidateXml:
     def test_valid_message_returns_element(self):
         result = validate_xml(_make_valid_body())
@@ -50,7 +86,7 @@ class TestValidateXml:
         assert validate_xml(xml) is None
 
     def test_missing_header_field_returns_none(self):
-        # message_id ontbreekt
+        # message_id is missing
         xml = b"""<message>
             <header>
                 <timestamp>2026-05-15T09:00:00Z</timestamp>
@@ -65,7 +101,7 @@ class TestValidateXml:
         assert validate_xml(xml) is None
 
     def test_missing_body_field_returns_none(self):
-        # title ontbreekt
+        # title is missing
         xml = b"""<message>
             <header>
                 <message_id>x</message_id><timestamp>x</timestamp>
@@ -80,6 +116,24 @@ class TestValidateXml:
 
     def test_non_utf8_bytes_returns_none(self):
         assert validate_xml(b"\xff\xfe invalid") is None
+
+    def test_session_updated_message_returns_element(self):
+        result = validate_xml(_make_updated_body())
+        assert result is not None
+
+    def test_session_deleted_message_returns_element(self):
+        result = validate_xml(_make_deleted_body())
+        assert result is not None
+
+    def test_unsupported_type_returns_none(self):
+        xml = b"""<message>
+            <header>
+                <message_id>x</message_id><timestamp>x</timestamp>
+                <source>x</source><type>unknown_type</type>
+            </header>
+            <body><session_id>x</session_id></body>
+        </message>"""
+        assert validate_xml(xml) is None
 
 
 class TestHandleCalendarInvite:
@@ -111,7 +165,7 @@ class TestHandleCalendarInvite:
             </body>
         </message>"""
         root = etree.fromstring(xml)
-        handle_calendar_invite(root)  # mag niet crashen
+        handle_calendar_invite(root)  # should not crash
 
 
 class TestOnMessage:
@@ -138,5 +192,17 @@ class TestOnMessage:
         channel = MagicMock()
         with caplog.at_level(logging.ERROR, logger="consumer"):
             on_message(channel, self._make_method(), MagicMock(), b"<broken>")
-        assert "Ongeldig bericht" in caplog.text
+        assert "Invalid message" in caplog.text
         assert "<broken>" in caplog.text
+
+    def test_updated_message_is_acked(self):
+        channel = MagicMock()
+        on_message(channel, self._make_method("planning.session.updated"), MagicMock(), _make_updated_body())
+        channel.basic_ack.assert_called_once_with(delivery_tag=1)
+        channel.basic_nack.assert_not_called()
+
+    def test_deleted_message_is_acked(self):
+        channel = MagicMock()
+        on_message(channel, self._make_method("planning.session.deleted"), MagicMock(), _make_deleted_body())
+        channel.basic_ack.assert_called_once_with(delivery_tag=1)
+        channel.basic_nack.assert_not_called()

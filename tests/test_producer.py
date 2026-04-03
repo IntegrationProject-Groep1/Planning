@@ -2,7 +2,13 @@ import pytest
 from unittest.mock import MagicMock, patch
 from lxml import etree
 
-from producer import create_session_xml, validate_xml, send_message
+from producer import (
+    create_session_xml,
+    create_session_updated_xml,
+    create_session_deleted_xml,
+    validate_xml,
+    send_message,
+)
 
 NS = "urn:integration:planning:v1"
 
@@ -90,7 +96,40 @@ class TestCreateSessionXml:
         root = _parse(xml)
         for elem in root.iter():
             assert elem.tag == elem.tag.lower() or "_" in elem.tag or elem.tag == "message", \
-                f"camelCase tag gevonden: {elem.tag}"
+                f"camelCase tag found: {elem.tag}"
+
+
+class TestCreateSessionUpdatedXml:
+    def test_updated_type_and_required_fields(self):
+        xml = create_session_updated_xml(
+            session_id="sess-001",
+            title="Updated title",
+            start_datetime="2026-05-15T16:00:00Z",
+            end_datetime="2026-05-15T17:00:00Z",
+            location="hybrid",
+        )
+
+        root = _parse(xml)
+        assert root.find("header").findtext("type") == "session_updated"
+        body = root.find("body")
+        for field in ("session_id", "title", "start_datetime", "end_datetime", "location"):
+            assert body.find(field) is not None
+
+
+class TestCreateSessionDeletedXml:
+    def test_deleted_type_and_required_fields(self):
+        xml = create_session_deleted_xml(
+            session_id="sess-001",
+            reason="cancelled",
+            deleted_by="planning-admin",
+        )
+
+        root = _parse(xml)
+        assert root.find("header").findtext("type") == "session_deleted"
+        body = root.find("body")
+        assert body.findtext("session_id") == "sess-001"
+        assert body.findtext("reason") == "cancelled"
+        assert body.findtext("deleted_by") == "planning-admin"
 
 
 class TestValidateXml:
@@ -129,6 +168,18 @@ class TestSendMessage:
     @patch("producer.pika.BlockingConnection")
     @patch("producer.RABBITMQ_USER", "user")
     @patch("producer.RABBITMQ_PASS", "pass")
+    def test_send_uses_custom_routing_key(self, mock_conn_cls):
+        mock_channel = MagicMock()
+        mock_conn_cls.return_value.channel.return_value = mock_channel
+
+        result = send_message(self._make_valid_xml(), routing_key="planning.session.updated")
+
+        assert result is True
+        assert mock_channel.basic_publish.call_args.kwargs["routing_key"] == "planning.session.updated"
+
+    @patch("producer.pika.BlockingConnection")
+    @patch("producer.RABBITMQ_USER", "user")
+    @patch("producer.RABBITMQ_PASS", "pass")
     def test_send_invalid_xml_returns_false(self, mock_conn_cls):
         mock_conn_cls.return_value.channel.return_value = MagicMock()
 
@@ -136,7 +187,7 @@ class TestSendMessage:
 
         assert result is False
 
-    @patch("producer.pika.BlockingConnection", side_effect=Exception("verbindingsfout"))
+    @patch("producer.pika.BlockingConnection", side_effect=Exception("connection_error"))
     @patch("producer.RABBITMQ_USER", "user")
     @patch("producer.RABBITMQ_PASS", "pass")
     def test_connection_error_returns_false(self, _):

@@ -187,6 +187,52 @@ All XML field names are **snake_case**, enum values are **lowercase**. This is m
 </message>
 ```
 
+### session_updated — Routing key: `planning.session.updated`
+
+```xml
+<message xmlns="urn:integration:planning:v1">
+  <header>
+    <message_id>550e8400-e29b-41d4-a716-446655440000</message_id>
+    <timestamp>2026-05-15T09:30:00Z</timestamp>
+    <source>planning</source>
+    <type>session_updated</type>
+    <version>1.0</version>
+    <correlation_id>corr-uuid-here</correlation_id>
+  </header>
+  <body>
+    <session_id>sess-uuid-001</session_id>
+    <title>Keynote: AI in Healthcare (Updated)</title>
+    <start_datetime>2026-05-15T14:30:00Z</start_datetime>
+    <end_datetime>2026-05-15T15:30:00Z</end_datetime>
+    <location>Aula A - Campus Jette</location>
+    <session_type>keynote</session_type>
+    <status>published</status>
+    <max_attendees>150</max_attendees>
+    <current_attendees>25</current_attendees>
+  </body>
+</message>
+```
+
+### session_deleted — Routing key: `planning.session.deleted`
+
+```xml
+<message xmlns="urn:integration:planning:v1">
+  <header>
+    <message_id>550e8400-e29b-41d4-a716-446655440000</message_id>
+    <timestamp>2026-05-15T10:00:00Z</timestamp>
+    <source>planning</source>
+    <type>session_deleted</type>
+    <version>1.0</version>
+    <correlation_id>corr-uuid-here</correlation_id>
+  </header>
+  <body>
+    <session_id>sess-uuid-001</session_id>
+    <reason>cancelled</reason>
+    <deleted_by>planning-admin</deleted_by>
+  </body>
+</message>
+```
+
 ### calendar.invite — Routing key: `calendar.invite` *(incoming)*
 
 ```xml
@@ -215,7 +261,7 @@ All XML field names are **snake_case**, enum values are **lowercase**. This is m
 |---|---|---|
 | **Exchange** | `calendar.exchange` | `planning.exchange` |
 | **Queue** | `planning.calendar.invite` | — |
-| **Routing key** | `calendar.invite` | `planning.session.created` |
+| **Routing key(s)** | `calendar.invite`, `planning.session.updated`, `planning.session.deleted` | `planning.session.created`, `planning.session.updated`, `planning.session.deleted` |
 | **Type** | topic | topic |
 
 **Broker:**
