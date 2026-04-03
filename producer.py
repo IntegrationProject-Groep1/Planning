@@ -2,6 +2,8 @@ import pika
 import os
 import logging
 import uuid
+from functools import lru_cache
+from pathlib import Path
 from datetime import datetime, timezone
 from lxml import etree
 from dotenv import load_dotenv
@@ -27,6 +29,12 @@ ROUTING_KEY_DELETED = 'planning.session.deleted'
 ROUTING_KEY_VIEW_REQUEST = 'planning.session.view.request'
 ROUTING_KEY_VIEW_RESPONSE = 'planning.session.view.response'
 XMLNS = "urn:integration:planning:v1"
+_XSD_BY_TYPE = {
+    "session_created": "session_created.xsd",
+    "session_updated": "session_updated.xsd",
+    "session_deleted": "session_deleted.xsd",
+    "session_view_request": "session_view_request.xsd",
+}
 
 
 def _require_env(name: str, value: str | None) -> str:
@@ -162,12 +170,50 @@ def create_session_view_request_xml(session_id: str | None = None) -> str:
     return etree.tostring(root, encoding="unicode", pretty_print=True)
 
 
+def _strip_ns(root: etree._Element) -> etree._Element:
+    for elem in root.iter():
+        elem.tag = etree.QName(elem.tag).localname
+    return root
+
+
+@lru_cache(maxsize=None)
+def _load_schema(schema_filename: str) -> etree.XMLSchema:
+    schema_path = Path(__file__).resolve().parent / "xsd" / schema_filename
+    with schema_path.open("rb") as f:
+        return etree.XMLSchema(etree.parse(f))
+
+
 def validate_xml(xml_string: str) -> bool:
     try:
-        etree.fromstring(xml_string.encode('utf-8'))
+        root_with_ns = etree.fromstring(xml_string.encode("utf-8"))
+
+        # Keep generic XML validation behavior for non-message payloads.
+        root = _strip_ns(etree.fromstring(xml_string.encode("utf-8")))
+        message_type = root.findtext("header/type")
+        if not message_type:
+            return True
+
+        schema_filename = _XSD_BY_TYPE.get(message_type)
+        if not schema_filename:
+            logger.error("Unsupported message type for schema validation: %s", message_type)
+            return False
+
+        schema = _load_schema(schema_filename)
+        if not schema.validate(root_with_ns):
+            schema_error = schema.error_log.last_error
+            logger.error(
+                "XML failed XSD validation for type '%s': %s",
+                message_type,
+                schema_error,
+            )
+            return False
+
         return True
     except etree.XMLSyntaxError as e:
-        logger.error(f"Invalid XML: {e}")
+        logger.error("Invalid XML: %s", e)
+        return False
+    except (OSError, etree.XMLSchemaParseError) as e:
+        logger.error("Could not load/parse XSD schema: %s", e)
         return False
 
 
