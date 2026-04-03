@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema
+    xmlns:xs="http://www.w3.org/2001/XMLSchema"
+    targetNamespace="urn:integration:planning:v1"
+    xmlns="urn:integration:planning:v1"
+    elementFormDefault="qualified"
+    attributeFormDefault="unqualified">
+
+    <xs:element name="message" type="SessionCreatedMessageType"/>
+
+    <xs:complexType name="SessionCreatedMessageType">
+        <xs:sequence>
+            <xs:element name="header" type="SessionCreatedHeaderType"/>
+            <xs:element name="body" type="SessionCreatedBodyType"/>
+        </xs:sequence>
+    </xs:complexType>
+
+    <xs:complexType name="SessionCreatedHeaderType">
+        <xs:sequence>
+            <xs:element name="message_id" type="xs:string"/>
+            <xs:element name="timestamp" type="xs:dateTime"/>
+            <xs:element name="source" type="xs:string"/>
+            <xs:element name="type">
+                <xs:simpleType>
+                    <xs:restriction base="xs:string">
+                        <xs:enumeration value="session_created"/>
+                    </xs:restriction>
+                </xs:simpleType>
+            </xs:element>
+            <xs:element name="version" type="xs:string" minOccurs="0"/>
+            <xs:element name="correlation_id" type="xs:string" minOccurs="0"/>
+        </xs:sequence>
+    </xs:complexType>
+
+    <xs:complexType name="SessionCreatedBodyType">
+        <xs:sequence>
+            <xs:element name="session_id" type="xs:string"/>
+            <xs:element name="title" type="xs:string"/>
+            <xs:element name="start_datetime" type="xs:string"/>
+            <xs:element name="end_datetime" type="xs:string"/>
+            <xs:element name="location" type="xs:string" minOccurs="0"/>
+            <xs:element name="session_type" type="xs:string" minOccurs="0"/>
+            <xs:element name="status" type="xs:string" minOccurs="0"/>
+            <xs:element name="max_attendees" type="xs:nonNegativeInteger" minOccurs="0"/>
+            <xs:element name="current_attendees" type="xs:nonNegativeInteger" minOccurs="0"/>
+        </xs:sequence>
+    </xs:complexType>
+
+</xs:schema>
