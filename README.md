@@ -1,105 +1,105 @@
-# Planning Service — Integration Project Groep 1
+# Planning Service — Integration Project Group 1
 
 ![Python](https://img.shields.io/badge/Python-3.12-blue?logo=python)
 ![RabbitMQ](https://img.shields.io/badge/RabbitMQ-3.12-orange?logo=rabbitmq)
 ![Docker](https://img.shields.io/badge/Docker-Compose-blue?logo=docker)
 ![CI](https://github.com/IntegrationProject-Groep1/Planning/actions/workflows/ci.yml/badge.svg)
 
-De Planning-service verwerkt sessie-aanvragen van andere teams via RabbitMQ, publiceert sessie-events terug, en maakt via de **Microsoft Graph API** events aan in de Outlook kalender van de gebruiker.
+The Planning service processes session requests from other teams via RabbitMQ, publishes session events back, and creates events in the users Outlook calendar via the **Microsoft Graph API**.
 
-> ⚠️ **Dit project is nog in ontwikkeling.** Niet alle functionaliteit is geïmplementeerd. Deze README kan nog wijzigen naarmate het project vordert.
-
----
-
-## Centrale Dashboards
-
-- **Log Viewer (Dozzle):** via de link: azureproject:(juiste poort)
-- **RabbitMQ Management:** via de link: azureproject:(juiste poort)
+> ⚠️ **This project is still under development.** Not all functionality has been implemented. This README may change as the project progresses.
 
 ---
 
-## Overzicht
+## Central Dashboards
+
+- **Log Viewer (Dozzle):** via the link: azureproject:(correct port)
+- **RabbitMQ Management:** via the link: azureproject:(correct port)
+
+---
+
+## Overview
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                      Planning Service                           │
 │                                                                 │
 │  consumer.py                      producer.py                   │
-│  Luistert op:                     Publiceert op:                │
+│  Listens on:                      Publishes on:                 │
 │  exchange: calendar.exchange      exchange: planning.exchange   │
 │  queue:    planning.calendar      routing:  planning.session    │
 │            .invite                          .created            │
 │  routing:  calendar.invite                                      │
 │                                                                 │
-│  health endpoint: :30050 (voor sidecar heartbeat)               │
+│  health endpoint: :30050 (for sidecar heartbeat)                │
 │                                                                 │
 │  [TODO] Microsoft Graph API (OAuth)                             │
-│  Gebruiker logt in → access token → event in Outlook kalender   │
+│  User logs in → access token → event in Outlook calendar        │
 └─────────────────────────────────────────────────────────────────┘
                           │
                           ▼
-         RabbitMQ Broker — poort 30000
+         RabbitMQ Broker — port 30000
 ```
 
 ---
 
-## Projectstructuur
+## Project Structure
 
 ```
 Planning/
-├── consumer.py          # Ontvangt calendar.invite berichten van andere teams
-├── producer.py          # Publiceert session_created berichten naar andere teams
+├── consumer.py          # Receives calendar.invite messages from other teams
+├── producer.py          # Publishes session_created messages to other teams
 ├── tests/
-│   ├── test_consumer.py # Tests voor de consumer
-│   └── test_producer.py # Tests voor de producer
-├── .env                 # Productie-credentials (niet in git ⚠️)
-├── .env.local           # Lokale credentials (niet in git ⚠️)
-├── .env.example         # Template — vul aan met eigen credentials
-├── docker-compose.yml   # Services orchestratie
-├── Dockerfile           # Docker image definitie
+│   ├── test_consumer.py # Tests for the consumer
+│   └── test_producer.py # Tests for the producer
+├── .env                 # Production credentials (not in git ⚠️)
+├── .env.local           # Local credentials (not in git ⚠️)
+├── .env.example         # Template — fill in with your own credentials
+├── docker-compose.yml   # Services orchestration
+├── Dockerfile           # Docker image definition
 └── requirements.txt     # Python dependencies
 ```
 
 ---
 
-## Snel starten
+## Quick Start
 
-### Vereisten
+### Requirements
 
 - Docker Desktop
 - Python 3.12+
 
-### 1. Credentials instellen
+### 1. Set Credentials
 
 ```bash
 cp .env.example .env
 ```
 
-Vul `.env` in met de productie-credentials (gekregen van Tom/infra).
-Zie [Environment variables](#environment-variables) voor een overzicht van alle variabelen.
+Fill in `.env` with the production credentials (obtained from Tom/infra).
+See [Environment variables](#environment-variables) for an overview of all variables.
 
-Voor lokaal ontwikkelen, maak `.env.local` aan op basis van `.env.example` met `RABBITMQ_HOST=localhost` en `RABBITMQ_PORT=5672`.
+For local development, create `.env.local` based on `.env.example` with `RABBITMQ_HOST=localhost` and `RABBITMQ_PORT=5672`.
 
-### 2. Starten
+### 2. Start
 
-**Productie** (verbinding met remote broker):
+**Production** (connection with remote broker):
 ```powershell
 docker compose up -d
 ```
 
-**Lokaal** (eigen RabbitMQ container):
+**Local** (own RabbitMQ container):
 ```powershell
 $env:ENV_FILE=".env.local"; docker compose --profile local up -d
 ```
 
-### 3. Logs bekijken
+### 3. View Logs
 
 ```powershell
 # Planning service
 docker compose logs -f planning-service
 ```
 
-### 4. Stoppen
+### 4. Stop
 
 ```powershell
 docker compose down
@@ -107,7 +107,7 @@ docker compose down
 
 ---
 
-## Lokaal ontwikkelen (zonder Docker)
+## Local Development (without Docker)
 
 ### Virtual environment
 
@@ -117,25 +117,25 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
-### Consumer starten
+### Start Consumer
 
 ```powershell
 python consumer.py
 ```
 
-Verwachte output:
+Expected output:
 ```
-INFO:__main__:Health endpoint gestart op poort 30050
-INFO:__main__:Consumer gestart | exchange=calendar.exchange | queue=planning.calendar.invite | routing_key=calendar.invite | vhost=/
+INFO:__main__:Health endpoint started on port 30050
+INFO:__main__:Consumer started | exchange=calendar.exchange | queue=planning.calendar.invite | routing_key=calendar.invite | vhost=/
 ```
 
-### Producer testen
+### Test Producer
 
 ```powershell
 python producer.py
 ```
 
-Verwachte output:
+Expected output:
 ```
 INFO:__main__:Message sent with routing key 'planning.session.created'
 INFO:__main__:✓ Message successfully sent to RabbitMQ
@@ -143,23 +143,23 @@ INFO:__main__:✓ Message successfully sent to RabbitMQ
 
 ### End-to-end test
 
-Start de consumer in terminal 1, stuur een testbericht in terminal 2:
+Start the consumer in terminal 1, send a test message in terminal 2:
 
 ```powershell
 # Terminal 2
 python test_send.py
 ```
 
-Verwachte output in terminal 1:
+Expected output in terminal 1:
 ```
-INFO:__main__:calendar.invite ontvangen | message_id=... | session_id=sess-test-001 | title=Test sessie | ...
+INFO:__main__:calendar.invite received | message_id=... | session_id=sess-test-001 | title=Test session | ...
 ```
 
 ---
 
-## XML-berichtformaat
+## XML Message Format
 
-Alle XML-veldnamen zijn **snake_case**, enum-waarden zijn **lowercase**. Dit is verplicht door de projectstandaard (v3).
+All XML field names are **snake_case**, enum values are **lowercase**. This is mandatory per project standard (v3).
 
 ### session_created — Routing key: `planning.session.created`
 
@@ -171,11 +171,11 @@ Alle XML-veldnamen zijn **snake_case**, enum-waarden zijn **lowercase**. Dit is 
     <source>planning</source>
     <type>session_created</type>
     <version>1.0</version>
-    <correlation_id>corr-uuid-hier</correlation_id>
+    <correlation_id>corr-uuid-here</correlation_id>
   </header>
   <body>
     <session_id>sess-uuid-001</session_id>
-    <title>Keynote: AI in de zorgsector</title>
+    <title>Keynote: AI in Healthcare</title>
     <start_datetime>2026-05-15T14:00:00Z</start_datetime>
     <end_datetime>2026-05-15T15:00:00Z</end_datetime>
     <location>Aula A - Campus Jette</location>
@@ -187,7 +187,53 @@ Alle XML-veldnamen zijn **snake_case**, enum-waarden zijn **lowercase**. Dit is 
 </message>
 ```
 
-### calendar.invite — Routing key: `calendar.invite` *(inkomend)*
+### session_updated — Routing key: `planning.session.updated`
+
+```xml
+<message xmlns="urn:integration:planning:v1">
+  <header>
+    <message_id>550e8400-e29b-41d4-a716-446655440000</message_id>
+    <timestamp>2026-05-15T09:30:00Z</timestamp>
+    <source>planning</source>
+    <type>session_updated</type>
+    <version>1.0</version>
+    <correlation_id>corr-uuid-here</correlation_id>
+  </header>
+  <body>
+    <session_id>sess-uuid-001</session_id>
+    <title>Keynote: AI in Healthcare (Updated)</title>
+    <start_datetime>2026-05-15T14:30:00Z</start_datetime>
+    <end_datetime>2026-05-15T15:30:00Z</end_datetime>
+    <location>Aula A - Campus Jette</location>
+    <session_type>keynote</session_type>
+    <status>published</status>
+    <max_attendees>150</max_attendees>
+    <current_attendees>25</current_attendees>
+  </body>
+</message>
+```
+
+### session_deleted — Routing key: `planning.session.deleted`
+
+```xml
+<message xmlns="urn:integration:planning:v1">
+  <header>
+    <message_id>550e8400-e29b-41d4-a716-446655440000</message_id>
+    <timestamp>2026-05-15T10:00:00Z</timestamp>
+    <source>planning</source>
+    <type>session_deleted</type>
+    <version>1.0</version>
+    <correlation_id>corr-uuid-here</correlation_id>
+  </header>
+  <body>
+    <session_id>sess-uuid-001</session_id>
+    <reason>cancelled</reason>
+    <deleted_by>planning-admin</deleted_by>
+  </body>
+</message>
+```
+
+### calendar.invite — Routing key: `calendar.invite` *(incoming)*
 
 ```xml
 <message xmlns="urn:integration:planning:v1">
@@ -199,7 +245,7 @@ Alle XML-veldnamen zijn **snake_case**, enum-waarden zijn **lowercase**. Dit is 
   </header>
   <body>
     <session_id>sess-uuid-001</session_id>
-    <title>Keynote: AI in de zorgsector</title>
+    <title>Keynote: AI in Healthcare</title>
     <start_datetime>2026-05-15T14:00:00Z</start_datetime>
     <end_datetime>2026-05-15T15:00:00Z</end_datetime>
     <location>online</location>
@@ -209,95 +255,95 @@ Alle XML-veldnamen zijn **snake_case**, enum-waarden zijn **lowercase**. Dit is 
 
 ---
 
-## RabbitMQ-configuratie
+## RabbitMQ Configuration
 
 | | Consumer | Producer |
 |---|---|---|
 | **Exchange** | `calendar.exchange` | `planning.exchange` |
 | **Queue** | `planning.calendar.invite` | — |
-| **Routing key** | `calendar.invite` | `planning.session.created` |
+| **Routing key(s)** | `calendar.invite`, `planning.session.updated`, `planning.session.deleted` | `planning.session.created`, `planning.session.updated`, `planning.session.deleted` |
 | **Type** | topic | topic |
 
 **Broker:**
 
-| Omgeving | Host | Poort |
+| Environment | Host | Port |
 |---|---|---|
-| Productie (AMQP) | zie `.env` | `30000` |
-| Productie (UI) | zie `.env` | `30001` |
-| Lokaal (AMQP) | `localhost` | `5672` |
-| Lokaal (UI) | `localhost` | `15672` |
+| Production (AMQP) | see `.env` | `30000` |
+| Production (UI) | see `.env` | `30001` |
+| Local (AMQP) | `localhost` | `5672` |
+| Local (UI) | `localhost` | `15672` |
 
 ---
 
 ## Heartbeat Sidecar
 
-De heartbeat wordt verzorgd door de gedeelde sidecar-image van Team Infra. Die controleert elke seconde of `planning-service:30050` bereikbaar is en stuurt een heartbeat naar RabbitMQ.
+The heartbeat is handled by Team Infra's shared sidecar image. It checks every second whether `planning-service:30050` is reachable and sends a heartbeat to RabbitMQ.
 
-De planning-service exposeert een minimale health endpoint op poort **30050** die `ok` teruggeeft.
+The planning service exposes a minimal health endpoint on port **30050** that returns `ok`.
 
-Status bekijken via de RabbitMQ UI → Exchange `heartbeat`, of in Kibana (Team Controlroom).
+View status via the RabbitMQ UI → Exchange `heartbeat`, or in Kibana (Team Controlroom).
 
 ---
 
 ## Microsoft Graph API *(coming soon)*
 
-De planning-service zal integreren met de **Microsoft Graph API** om events rechtstreeks aan te maken in de Outlook kalender van de gebruiker.
+The planning service will integrate with the **Microsoft Graph API** to create events directly in the user's Outlook calendar.
 
-**Vereisten:**
-- Azure App Registration (`client_id`, `client_secret`, `tenant_id`) — te verkrijgen bij de prof
-- OAuth 2.0 — gebruiker moet inloggen met Microsoft account
+**Requirements:**
+- Azure App Registration (`client_id`, `client_secret`, `tenant_id`) — obtainable from the professor
+- OAuth 2.0 — user must log in with Microsoft account
 - Permission: `Calendars.ReadWrite`
 
 **Flow:**
 ```
-[Gebruiker logt in via Microsoft OAuth]
+[User logs in via Microsoft OAuth]
         ↓
-[Planning-service ontvangt access token]
+[Planning service receives access token]
         ↓
 [Graph API: POST /me/events]
         ↓
-[Event verschijnt in Outlook kalender van de gebruiker]
+[Event appears in user's Outlook calendar]
 ```
 
-> ⚠️ **Nog niet geïmplementeerd.** Wacht op Azure App Registration credentials van de prof.
+> ⚠️ **Not yet implemented.** Waiting for Azure App Registration credentials from the professor.
 
 ---
 
-## Environment variables
+## Environment Variables
 
-| Variable | Verplicht | Beschrijving |
+| Variable | Required | Description |
 |---|---|---|
-| `RABBITMQ_HOST` | ja | Hostnaam van de broker |
-| `RABBITMQ_PORT` | ja | AMQP-poort (`30000` prod / `5672` lokaal) |
-| `RABBITMQ_USER` | ja | Gebruikersnaam (gekregen van infra) |
-| `RABBITMQ_PASS` | ja | Wachtwoord (gekregen van infra) |
-| `RABBITMQ_VHOST` | ja | Virtual host (standaard: `/`) |
+| `RABBITMQ_HOST` | yes | Hostname of the broker |
+| `RABBITMQ_PORT` | yes | AMQP port (`30000` prod / `5672` local) |
+| `RABBITMQ_USER` | yes | Username (obtained from infra) |
+| `RABBITMQ_PASS` | yes | Password (obtained from infra) |
+| `RABBITMQ_VHOST` | yes | Virtual host (default: `/`) |
 
-> Gebruik `.env.example` als basis. Commit **nooit** `.env` of `.env.local` naar git.
+> Use `.env.example` as a basis. **Never** commit `.env` or `.env.local` to git.
 
 ---
 
 ## Tests
 
 ```powershell
-# Installeer pytest (eenmalig)
+# Install pytest (once)
 .venv\Scripts\pip install pytest
 
-# Alle tests uitvoeren
+# Run all tests
 .venv\Scripts\pytest tests/ -v
 ```
 
-Tests dekken:
-- XML-generatie en veldvalidatie (producer)
-- XML-parsing, ontbrekende velden en foutafhandeling (consumer)
-- RabbitMQ ack/nack gedrag (consumer)
-- Verbindingsfouten en ontbrekende credentials (producer)
+Tests cover:
+- XML generation and field validation (producer)
+- XML parsing, missing fields, and error handling (consumer)
+- RabbitMQ ack/nack behavior (consumer)
+- Connection errors and missing credentials (producer)
 
 ---
 
-## Voor andere teams — berichten sturen naar Planning
+## For Other Teams — Sending Messages to Planning
 
-Om een `calendar.invite` te sturen naar de planning-service:
+To send a `calendar.invite` to the planning service:
 
 ```python
 channel.exchange_declare(exchange="calendar.exchange", exchange_type="topic", durable=True)
@@ -309,10 +355,10 @@ channel.basic_publish(
 )
 ```
 
-Verplichte velden in `<body>`: `session_id`, `title`, `start_datetime`, `end_datetime`.
+Required fields in `<body>`: `session_id`, `title`, `start_datetime`, `end_datetime`.
 
 ---
 
 ## Team Planning
 
-Desideriushogeschool — Integratieproject Groep Planning
+Desiderius University of Applied Sciences — Integration Project Group Planning

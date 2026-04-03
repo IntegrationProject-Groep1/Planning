@@ -21,7 +21,11 @@ RABBITMQ_PASS = os.getenv("RABBITMQ_PASS")
 
 # Exchange and routing key (with planning prefix per new infra standard)
 EXCHANGE_NAME = 'planning.exchange'
-ROUTING_KEY = 'planning.session.created'
+ROUTING_KEY_CREATED = 'planning.session.created'
+ROUTING_KEY_UPDATED = 'planning.session.updated'
+ROUTING_KEY_DELETED = 'planning.session.deleted'
+ROUTING_KEY_VIEW_REQUEST = 'planning.session.view.request'
+ROUTING_KEY_VIEW_RESPONSE = 'planning.session.view.response'
 XMLNS = "urn:integration:planning:v1"
 
 
@@ -31,16 +35,8 @@ def _require_env(name: str, value: str | None) -> str:
     return value
 
 
-def create_session_xml(
-    session_id: str,
-    title: str,
-    start_datetime: str,
-    end_datetime: str,
-    location: str,
-    max_attendees: int = 120,
-    current_attendees: int = 0
-) -> str:
-    """Create a session.created XML message with required header/body fields."""
+def _build_message_root(message_type: str) -> tuple[etree._Element, etree._Element]:
+    """Create common message/header envelope and return (root, body)."""
     root = etree.Element("message", xmlns=XMLNS)
 
     header = etree.SubElement(root, "header")
@@ -55,7 +51,7 @@ def create_session_xml(
     source_elem.text = "planning"
 
     type_elem = etree.SubElement(header, "type")
-    type_elem.text = "session_created"
+    type_elem.text = message_type
 
     version_elem = etree.SubElement(header, "version")
     version_elem.text = "1.0"
@@ -64,6 +60,20 @@ def create_session_xml(
     correlation_id_elem.text = str(uuid.uuid4())
 
     body = etree.SubElement(root, "body")
+    return root, body
+
+
+def create_session_xml(
+    session_id: str,
+    title: str,
+    start_datetime: str,
+    end_datetime: str,
+    location: str,
+    max_attendees: int = 120,
+    current_attendees: int = 0
+) -> str:
+    """Create a session.created XML message with required header/body fields."""
+    root, body = _build_message_root("session_created")
 
     session_id_elem = etree.SubElement(body, "session_id")
     session_id_elem.text = session_id
@@ -95,6 +105,63 @@ def create_session_xml(
     return etree.tostring(root, encoding="unicode", pretty_print=True)
 
 
+def create_session_updated_xml(
+    session_id: str,
+    title: str,
+    start_datetime: str,
+    end_datetime: str,
+    location: str,
+    session_type: str = "keynote",
+    status: str = "published",
+    max_attendees: int | None = None,
+    current_attendees: int | None = None,
+) -> str:
+    """Create a session.updated XML message for integration updates."""
+    root, body = _build_message_root("session_updated")
+
+    etree.SubElement(body, "session_id").text = session_id
+    etree.SubElement(body, "title").text = title
+    etree.SubElement(body, "start_datetime").text = start_datetime
+    etree.SubElement(body, "end_datetime").text = end_datetime
+    etree.SubElement(body, "location").text = location
+    etree.SubElement(body, "session_type").text = session_type
+    etree.SubElement(body, "status").text = status
+
+    if max_attendees is not None:
+        etree.SubElement(body, "max_attendees").text = str(max_attendees)
+    if current_attendees is not None:
+        etree.SubElement(body, "current_attendees").text = str(current_attendees)
+
+    return etree.tostring(root, encoding="unicode", pretty_print=True)
+
+
+def create_session_deleted_xml(
+    session_id: str,
+    reason: str | None = None,
+    deleted_by: str | None = None,
+) -> str:
+    """Create a session.deleted XML message for integration deletes."""
+    root, body = _build_message_root("session_deleted")
+
+    etree.SubElement(body, "session_id").text = session_id
+    if reason:
+        etree.SubElement(body, "reason").text = reason
+    if deleted_by:
+        etree.SubElement(body, "deleted_by").text = deleted_by
+
+    return etree.tostring(root, encoding="unicode", pretty_print=True)
+
+
+def create_session_view_request_xml(session_id: str | None = None) -> str:
+    """Create a session.view.request XML message (single session or all sessions)."""
+    root, body = _build_message_root("session_view_request")
+
+    if session_id:
+        etree.SubElement(body, "session_id").text = session_id
+
+    return etree.tostring(root, encoding="unicode", pretty_print=True)
+
+
 def validate_xml(xml_string: str) -> bool:
     try:
         etree.fromstring(xml_string.encode('utf-8'))
@@ -104,7 +171,7 @@ def validate_xml(xml_string: str) -> bool:
         return False
 
 
-def send_message(xml_message: str):
+def send_message(xml_message: str, routing_key: str = ROUTING_KEY_CREATED):
     try:
         user = _require_env("RABBITMQ_USER", RABBITMQ_USER)
         password = _require_env("RABBITMQ_PASS", RABBITMQ_PASS)
@@ -129,13 +196,13 @@ def send_message(xml_message: str):
         )
 
         if not validate_xml(xml_message):
-            logger.error("Cannot send invalid XML message\nInhoud:\n%s", xml_message)
+            logger.error("Cannot send invalid XML message\nPayload:\n%s", xml_message)
             connection.close()
             return False
 
         channel.basic_publish(
             exchange=EXCHANGE_NAME,
-            routing_key=ROUTING_KEY,
+            routing_key=routing_key,
             body=xml_message,
             properties=pika.BasicProperties(
                 content_type="application/xml",
@@ -143,7 +210,7 @@ def send_message(xml_message: str):
             )
         )
 
-        logger.info(f"Message sent with routing key '{ROUTING_KEY}'")
+        logger.info("Message sent with routing key '%s'", routing_key)
         connection.close()
         return True
 
@@ -164,7 +231,7 @@ def send_message(xml_message: str):
 def main():
     session_xml = create_session_xml(
         session_id="sess-uuid-001",
-        title="Keynote: AI in de zorgsector",
+        title="Keynote: AI in healthcare",
         start_datetime="2026-05-15T14:00:00Z",
         end_datetime="2026-05-15T15:00:00Z",
         location="online",
