@@ -55,7 +55,9 @@ services:
     volumes:
       - ./migrations:/migrations:ro
     command: >
-      sh -c "psql postgresql://$${POSTGRES_USER}:$${POSTGRES_PASSWORD}@db:5432/$${POSTGRES_DB} -f /migrations/001_initial.sql && echo 'Migration done.'"
+      sh -c "psql postgresql://$${POSTGRES_USER}:$${POSTGRES_PASSWORD}@db:5432/$${POSTGRES_DB} -f /migrations/001_initial.sql && 
+             psql postgresql://$${POSTGRES_USER}:$${POSTGRES_PASSWORD}@db:5432/$${POSTGRES_DB} -f /migrations/002_planning_schema.sql && 
+             echo 'Migrations completed.'"
     depends_on:
       db:
         condition: service_healthy
@@ -72,18 +74,6 @@ services:
     depends_on:
       - db
       - migrate
-    networks:
-      - planning_network
-
-  sidecar:
-    image: ghcr.io/integrationproject-groep1/heartbeat:latest
-    env_file:
-      - ${ENV_FILE:-.env}
-    environment:
-      - SYSTEM_NAME=planning
-      - TARGETS=planning-service:30050
-    depends_on:
-      - planning-service
     networks:
       - planning_network
 
