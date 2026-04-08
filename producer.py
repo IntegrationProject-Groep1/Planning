@@ -2,10 +2,15 @@
 Planning service producer.
 Sends planning service events to other teams via RabbitMQ.
 Supports: session_created, session_updated, session_deleted, session_view_response
+
+Outgoing messages are validated against their XSD schema before publishing.
+Failed publishes are retried with exponential backoff (default: 3 attempts).
+Invalid XML is blocked and logged — it is never published.
 """
 
 import pika
 import os
+import time
 import logging
 from dotenv import load_dotenv
 
@@ -15,6 +20,7 @@ from xml_handlers import (
     build_session_deleted_xml,
     build_session_view_response_xml,
 )
+from xsd_validator import validate_xml
 
 # Load environment variables
 load_dotenv()
@@ -65,19 +71,17 @@ def _get_connection():
 
 
 def _publish_message(xml_message: str, routing_key: str) -> bool:
-    """Publish XML message to RabbitMQ."""
+    """Publish a single XML message to RabbitMQ (one attempt, no retry)."""
+    connection = _get_connection()
     try:
-        connection = _get_connection()
         channel = connection.channel()
 
-        # Declare exchange
         channel.exchange_declare(
             exchange=PLANNING_EXCHANGE,
             exchange_type="topic",
             durable=True,
         )
 
-        # Publish message
         channel.basic_publish(
             exchange=PLANNING_EXCHANGE,
             routing_key=routing_key,
@@ -89,12 +93,73 @@ def _publish_message(xml_message: str, routing_key: str) -> bool:
         )
 
         logger.info("Message published | routing_key=%s", routing_key)
-        connection.close()
         return True
 
-    except Exception as e:
-        logger.error("Error publishing message: %s", e, exc_info=True)
+    finally:
+        try:
+            connection.close()
+        except Exception:
+            pass
+
+
+def _publish_with_validation_and_retry(
+    xml_message: str,
+    routing_key: str,
+    message_type: str,
+    max_retries: int = 3,
+    initial_delay: float = 1.0,
+) -> bool:
+    """
+    Validate XML against XSD, then publish with exponential backoff retry.
+
+    Steps:
+      1. Validate xml_message against the XSD for message_type.
+         If invalid → log error, return False immediately (no publish).
+      2. Attempt publish up to max_retries times.
+         Delay between attempts doubles each time (1s, 2s, 4s, …).
+
+    Returns True on success, False if all attempts fail or XSD is invalid.
+    """
+    # --- XSD validation gate ---
+    valid, xsd_error = validate_xml(xml_message, message_type)
+    if not valid:
+        logger.error(
+            "Outgoing message blocked: XSD validation failed "
+            "| message_type=%s | error=%s",
+            message_type,
+            xsd_error,
+        )
         return False
+
+    # --- Publish with retry ---
+    delay = initial_delay
+    for attempt in range(1, max_retries + 1):
+        try:
+            if _publish_message(xml_message, routing_key):
+                return True
+        except Exception as exc:
+            logger.warning(
+                "Publish attempt %d/%d failed | routing_key=%s | error=%s",
+                attempt,
+                max_retries,
+                routing_key,
+                exc,
+            )
+
+        if attempt < max_retries:
+            logger.info(
+                "Retrying in %.1fs | routing_key=%s", delay, routing_key
+            )
+            time.sleep(delay)
+            delay *= 2
+
+    logger.error(
+        "All %d publish attempts exhausted | routing_key=%s | message_type=%s",
+        max_retries,
+        routing_key,
+        message_type,
+    )
+    return False
 
 
 # ============================================================================
@@ -132,8 +197,10 @@ def publish_session_created(
             correlation_id=correlation_id,
         )
 
-        logger.info("Created XML for session_created:\n%s", xml_message)
-        return _publish_message(xml_message, "planning.session.created")
+        logger.info("Built XML for session_created:\n%s", xml_message)
+        return _publish_with_validation_and_retry(
+            xml_message, "planning.session.created", "session_created"
+        )
 
     except Exception as e:
         logger.error("Error publishing session_created: %s", e, exc_info=True)
@@ -171,8 +238,10 @@ def publish_session_updated(
             correlation_id=correlation_id,
         )
 
-        logger.info("Created XML for session_updated:\n%s", xml_message)
-        return _publish_message(xml_message, "planning.session.updated")
+        logger.info("Built XML for session_updated:\n%s", xml_message)
+        return _publish_with_validation_and_retry(
+            xml_message, "planning.session.updated", "session_updated"
+        )
 
     except Exception as e:
         logger.error("Error publishing session_updated: %s", e, exc_info=True)
@@ -198,8 +267,10 @@ def publish_session_deleted(
             correlation_id=correlation_id,
         )
 
-        logger.info("Created XML for session_deleted:\n%s", xml_message)
-        return _publish_message(xml_message, "planning.session.deleted")
+        logger.info("Built XML for session_deleted:\n%s", xml_message)
+        return _publish_with_validation_and_retry(
+            xml_message, "planning.session.deleted", "session_deleted"
+        )
 
     except Exception as e:
         logger.error("Error publishing session_deleted: %s", e, exc_info=True)
@@ -237,8 +308,10 @@ def publish_session_view_response(
             correlation_id=correlation_id,
         )
 
-        logger.info("Created XML for session_view_response:\n%s", xml_message)
-        return _publish_message(xml_message, "planning.session.view_response")
+        logger.info("Built XML for session_view_response:\n%s", xml_message)
+        return _publish_with_validation_and_retry(
+            xml_message, "planning.session.view_response", "session_view_response"
+        )
 
     except Exception as e:
         logger.error("Error publishing session_view_response: %s", e, exc_info=True)

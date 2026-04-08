@@ -3,12 +3,13 @@ Tests for producer.py - message publishing to RabbitMQ.
 """
 
 import pytest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch, MagicMock, call
 from producer import (
     publish_session_created,
     publish_session_updated,
     publish_session_deleted,
     publish_session_view_response,
+    _publish_with_validation_and_retry,
 )
 
 
@@ -32,9 +33,10 @@ class TestPublishSessionCreated:
         assert mock_publish.called
         assert "planning.session.created" in str(mock_publish.call_args)
 
+    @patch("producer.time.sleep")
     @patch("producer._publish_message")
-    def test_publish_session_created_failure(self, mock_publish):
-        """Publishing session_created should handle failure."""
+    def test_publish_session_created_failure(self, mock_publish, mock_sleep):
+        """Publishing session_created should return False after all retries fail."""
         mock_publish.return_value = False
 
         result = publish_session_created(
@@ -46,6 +48,8 @@ class TestPublishSessionCreated:
         )
 
         assert result is False
+        # Default max_retries=3 means _publish_message is called 3 times
+        assert mock_publish.call_count == 3
 
     @patch("producer._publish_message")
     def test_publish_session_created_with_correlation_id(self, mock_publish):
@@ -196,3 +200,129 @@ class TestPublishSessionViewResponse:
         assert "sess-001" in call_args
         assert "sess-002" in call_args
 
+
+# ============================================================================
+# Tests for XSD validation gate in _publish_with_validation_and_retry
+# ============================================================================
+
+VALID_SESSION_CREATED_XML = b"""<message xmlns="urn:integration:planning:v1">
+  <header>
+    <message_id>m1</message_id>
+    <timestamp>2026-05-15T09:00:00Z</timestamp>
+    <source>planning</source>
+    <type>session_created</type>
+  </header>
+  <body>
+    <session_id>sess-001</session_id>
+    <title>Test</title>
+    <start_datetime>2026-05-15T14:00:00Z</start_datetime>
+    <end_datetime>2026-05-15T15:00:00Z</end_datetime>
+  </body>
+</message>"""
+
+INVALID_SESSION_CREATED_XML = b"""<message xmlns="urn:integration:planning:v1">
+  <header>
+    <message_id>m1</message_id>
+    <timestamp>2026-05-15T09:00:00Z</timestamp>
+    <source>planning</source>
+    <type>session_created</type>
+  </header>
+  <body>
+    <title>Missing required session_id</title>
+    <start_datetime>2026-05-15T14:00:00Z</start_datetime>
+    <end_datetime>2026-05-15T15:00:00Z</end_datetime>
+  </body>
+</message>"""
+
+
+class TestPublishWithValidationAndRetry:
+    """Tests for _publish_with_validation_and_retry."""
+
+    @patch("producer._publish_message")
+    def test_valid_xml_is_published(self, mock_publish):
+        """Valid XML passes XSD gate and reaches RabbitMQ."""
+        mock_publish.return_value = True
+
+        result = _publish_with_validation_and_retry(
+            VALID_SESSION_CREATED_XML.decode(),
+            "planning.session.created",
+            "session_created",
+        )
+
+        assert result is True
+        assert mock_publish.call_count == 1
+
+    @patch("producer._publish_message")
+    def test_invalid_xml_is_blocked(self, mock_publish):
+        """Invalid XML is blocked at the XSD gate — never reaches RabbitMQ."""
+        result = _publish_with_validation_and_retry(
+            INVALID_SESSION_CREATED_XML.decode(),
+            "planning.session.created",
+            "session_created",
+        )
+
+        assert result is False
+        mock_publish.assert_not_called()
+
+    @patch("producer.time.sleep")
+    @patch("producer._publish_message")
+    def test_retries_on_publish_failure(self, mock_publish, mock_sleep):
+        """Failed publish is retried up to max_retries times."""
+        mock_publish.return_value = False
+
+        result = _publish_with_validation_and_retry(
+            VALID_SESSION_CREATED_XML.decode(),
+            "planning.session.created",
+            "session_created",
+            max_retries=3,
+        )
+
+        assert result is False
+        assert mock_publish.call_count == 3
+
+    @patch("producer.time.sleep")
+    @patch("producer._publish_message")
+    def test_succeeds_on_second_attempt(self, mock_publish, mock_sleep):
+        """Publish succeeds on the second attempt after one failure."""
+        mock_publish.side_effect = [False, True]
+
+        result = _publish_with_validation_and_retry(
+            VALID_SESSION_CREATED_XML.decode(),
+            "planning.session.created",
+            "session_created",
+            max_retries=3,
+        )
+
+        assert result is True
+        assert mock_publish.call_count == 2
+
+    @patch("producer.time.sleep")
+    @patch("producer._publish_message")
+    def test_exponential_backoff_delays(self, mock_publish, mock_sleep):
+        """Sleep durations follow exponential backoff: 1s, 2s."""
+        mock_publish.return_value = False
+
+        _publish_with_validation_and_retry(
+            VALID_SESSION_CREATED_XML.decode(),
+            "planning.session.created",
+            "session_created",
+            max_retries=3,
+            initial_delay=1.0,
+        )
+
+        # 2 sleeps between 3 attempts: 1.0s then 2.0s
+        assert mock_sleep.call_count == 2
+        mock_sleep.assert_any_call(1.0)
+        mock_sleep.assert_any_call(2.0)
+
+    @patch("producer._publish_message")
+    def test_unknown_message_type_blocked(self, mock_publish):
+        """Unknown message type cannot pass XSD gate."""
+        result = _publish_with_validation_and_retry(
+            b"<x/>",
+            "planning.some.queue",
+            "totally_unknown",
+        )
+
+        assert result is False
+        mock_publish.assert_not_called()
