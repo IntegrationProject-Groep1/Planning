@@ -11,6 +11,8 @@ import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from dotenv import load_dotenv
 
+load_dotenv()
+
 from xml_handlers import parse_message
 from xml_models import (
     CalendarInviteMessage,
@@ -27,8 +29,7 @@ from calendar_service import (
     SessionViewRequestService,
 )
 from graph_service import GraphService
-
-load_dotenv()
+from producer import publish_calendar_invite_confirmed
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -114,6 +115,14 @@ def handle_calendar_invite(msg: CalendarInviteMessage, channel, delivery_tag):
             start_datetime=msg.body.start_datetime,
             end_datetime=msg.body.end_datetime,
             location=msg.body.location or "",
+        )
+
+        # Confirm enrollment back to Frontend
+        publish_calendar_invite_confirmed(
+            session_id=msg.body.session_id,
+            original_message_id=msg.header.message_id,
+            status="confirmed",
+            correlation_id=msg.header.correlation_id,
         )
 
         logger.info("calendar.invite processed successfully | message_id=%s", msg.header.message_id)

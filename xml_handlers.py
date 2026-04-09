@@ -415,6 +415,59 @@ def build_session_view_response_xml(
     return etree.tostring(root, encoding="unicode", pretty_print=True)
 
 
+def build_calendar_invite_confirmed_xml(
+    session_id: str,
+    original_message_id: str,
+    status: str = "confirmed",
+    correlation_id: Optional[str] = None,
+) -> str:
+    """Build calendar.invite.confirmed XML message (outgoing response to Frontend)."""
+    root = etree.Element("message", xmlns=XMLNS)
+
+    header = etree.SubElement(root, "header")
+    etree.SubElement(header, "message_id").text = str(uuid.uuid4())
+    etree.SubElement(header, "timestamp").text = datetime.now(timezone.utc).isoformat()
+    etree.SubElement(header, "source").text = "planning"
+    etree.SubElement(header, "type").text = "calendar.invite.confirmed"
+    etree.SubElement(header, "version").text = "1.0"
+    etree.SubElement(header, "correlation_id").text = correlation_id or str(uuid.uuid4())
+
+    body = etree.SubElement(root, "body")
+    etree.SubElement(body, "session_id").text = session_id
+    etree.SubElement(body, "original_message_id").text = original_message_id
+    etree.SubElement(body, "status").text = status
+
+    return etree.tostring(root, encoding="unicode", pretty_print=True)
+
+
+def build_calendar_invite_xml(
+    session_id: str,
+    title: str,
+    start_datetime: str,
+    end_datetime: str,
+    location: str = "",
+    source: str = "frontend",
+) -> str:
+    """Build a calendar.invite XML message (outgoing from the frontend demo)."""
+    root = etree.Element("message", xmlns=XMLNS)
+
+    header = etree.SubElement(root, "header")
+    etree.SubElement(header, "message_id").text = str(uuid.uuid4())
+    etree.SubElement(header, "timestamp").text = datetime.now(timezone.utc).isoformat()
+    etree.SubElement(header, "source").text = source
+    etree.SubElement(header, "type").text = "calendar.invite"
+
+    body = etree.SubElement(root, "body")
+    etree.SubElement(body, "session_id").text = session_id
+    etree.SubElement(body, "title").text = title
+    etree.SubElement(body, "start_datetime").text = start_datetime
+    etree.SubElement(body, "end_datetime").text = end_datetime
+    if location:
+        etree.SubElement(body, "location").text = location
+
+    return etree.tostring(root, encoding="unicode", pretty_print=True)
+
+
 # ============================================================================
 # GENERIC PARSER
 # ============================================================================

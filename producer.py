@@ -15,6 +15,7 @@ import logging
 from dotenv import load_dotenv
 
 from xml_handlers import (
+    build_calendar_invite_confirmed_xml,
     build_session_created_xml,
     build_session_updated_xml,
     build_session_deleted_xml,
@@ -165,6 +166,38 @@ def _publish_with_validation_and_retry(
 # ============================================================================
 # PUBLIC API FUNCTIONS
 # ============================================================================
+
+def publish_calendar_invite_confirmed(
+    session_id: str,
+    original_message_id: str,
+    status: str = "confirmed",
+    correlation_id: str = None,
+) -> bool:
+    """
+    Publish calendar.invite.confirmed response to Frontend.
+
+    Called after a calendar.invite is successfully processed and the
+    Outlook event is created. Lets Frontend know the enrollment was confirmed.
+
+    Returns True on success, False on failure.
+    """
+    try:
+        xml_message = build_calendar_invite_confirmed_xml(
+            session_id=session_id,
+            original_message_id=original_message_id,
+            status=status,
+            correlation_id=correlation_id,
+        )
+
+        logger.info("Built XML for calendar.invite.confirmed:\n%s", xml_message)
+        return _publish_with_validation_and_retry(
+            xml_message, "planning.calendar.invite.confirmed", "calendar.invite.confirmed"
+        )
+
+    except Exception as e:
+        logger.error("Error publishing calendar.invite.confirmed: %s", e, exc_info=True)
+        return False
+
 
 def publish_session_created(
     session_id: str,

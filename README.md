@@ -1,318 +1,247 @@
-# Planning Service — Integration Project Groep 1
+# Planning Service — Integration Project Group 1
 
 ![Python](https://img.shields.io/badge/Python-3.12-blue?logo=python)
 ![RabbitMQ](https://img.shields.io/badge/RabbitMQ-3.12-orange?logo=rabbitmq)
 ![Docker](https://img.shields.io/badge/Docker-Compose-blue?logo=docker)
 ![CI](https://github.com/IntegrationProject-Groep1/Planning/actions/workflows/ci.yml/badge.svg)
 
-De Planning-service verwerkt sessie-aanvragen van andere teams via RabbitMQ, publiceert sessie-events terug, en maakt via de **Microsoft Graph API** events aan in de Outlook kalender van de gebruiker.
-
-> ⚠️ **Dit project is nog in ontwikkeling.** Niet alle functionaliteit is geïmplementeerd. Deze README kan nog wijzigen naarmate het project vordert.
+The Planning service receives session requests from other teams via RabbitMQ, publishes session events, manages a PostgreSQL session database, and synchronises Outlook calendar events via the **Microsoft Graph API**.
 
 ---
 
-## Centrale Dashboards
+## Documentation
 
-- **Log Viewer (Dozzle):** via de link: azureproject:(juiste poort)
-- **RabbitMQ Management:** via de link: azureproject:(juiste poort)
+| Document | Description |
+|---|---|
+| [docs/MESSAGE_CONTRACTS.md](docs/MESSAGE_CONTRACTS.md) | All XML message formats, routing keys, and examples |
+| [docs/GRAPH_API.md](docs/GRAPH_API.md) | Microsoft Graph API setup, flows, and graph_sync table |
+| [docs/ERROR_HANDLING.md](docs/ERROR_HANDLING.md) | Error catalogue, retry strategy, observability queries |
+| [IMPLEMENTATION_SUMMARY.md](IMPLEMENTATION_SUMMARY.md) | Full implementation overview with file structure |
 
 ---
 
-## Overzicht
+## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                      Planning Service                           │
-│                                                                 │
-│  consumer.py                      producer.py                   │
-│  Luistert op:                     Publiceert op:                │
-│  exchange: calendar.exchange      exchange: planning.exchange   │
-│  queue:    planning.calendar      routing:  planning.session    │
-│            .invite                          .created            │
-│  routing:  calendar.invite                                      │
-│                                                                 │
-│  health endpoint: :30050 (voor sidecar heartbeat)               │
-│                                                                 │
-│  [TODO] Microsoft Graph API (OAuth)                             │
-│  Gebruiker logt in → access token → event in Outlook kalender   │
-└─────────────────────────────────────────────────────────────────┘
-                          │
-                          ▼
-         RabbitMQ Broker — poort 30000
+┌──────────────────────────────────────────────────────────────────┐
+│                        Planning Service                          │
+│                                                                  │
+│  consumer.py                       producer.py                        │
+│  Listens on:                       Publishes to:                      │
+│  calendar.exchange                 planning.exchange                  │
+│    └─ calendar.invite                └─ planning.calendar.invite      │
+│  planning.exchange                        .confirmed                  │
+│    └─ planning.session.#             └─ planning.session.created      │
+│                                      └─ planning.session.updated      │
+│                                      └─ planning.session.deleted      │
+│                                      └─ planning.session.view_response│
+│                                                                  │
+│  xml_handlers.py  ←→  xsd_validator.py  ←→  schemas/*.xsd       │
+│  xml_models.py                                                   │
+│                                                                  │
+│  calendar_service.py  ←→  PostgreSQL                            │
+│  graph_service.py     ←→  Microsoft Graph API (Outlook)         │
+│                                                                  │
+│  Health endpoint: :30050                                         │
+└──────────────────────────────────────────────────────────────────┘
+                           │
+                           ▼
+          RabbitMQ Broker — port 30000
 ```
 
 ---
 
-## Projectstructuur
+## Project Structure
 
 ```
 Planning/
-├── consumer.py          # Ontvangt calendar.invite berichten van andere teams
-├── producer.py          # Publiceert session_created berichten naar andere teams
+├── consumer.py               # RabbitMQ consumer — 5 message handlers
+├── producer.py               # RabbitMQ publisher — XSD validation + retry
+├── xml_models.py             # Dataclasses for all 6 message types
+├── xml_handlers.py           # XML parsing and building
+├── xsd_validator.py          # XSD validation against schemas/
+├── calendar_service.py       # PostgreSQL service layer (5 classes)
+├── graph_client.py           # Microsoft Graph API HTTP client (MSAL)
+├── graph_service.py          # Graph + DB sync orchestration
+├── dashboard.py              # Sync status dashboard (http://localhost:8088)
+│
+├── schemas/                  # XSD schema files (one per message type)
+│   ├── calendar_invite.xsd            # incoming: enrollment from Frontend
+│   ├── calendar_invite_confirmed.xsd  # outgoing: enrollment confirmation to Frontend
+│   ├── session_created.xsd
+│   ├── session_updated.xsd
+│   ├── session_deleted.xsd
+│   ├── session_view_request.xsd
+│   └── session_view_response.xsd
+│
+├── migrations/
+│   ├── 001_initial.sql       # Initial schema
+│   ├── 002_planning_schema.sql  # Sessions, message_log, audit tables
+│   └── 003_graph_sync.sql    # graph_sync table (session ↔ Outlook event)
+│
 ├── tests/
-│   ├── test_consumer.py # Tests voor de consumer
-│   └── test_producer.py # Tests voor de producer
-├── .env                 # Productie-credentials (niet in git ⚠️)
-├── .env.local           # Lokale credentials (niet in git ⚠️)
-├── .env.example         # Template — vul aan met eigen credentials
-├── docker-compose.yml   # Services orchestratie
-├── Dockerfile           # Docker image definitie
-└── requirements.txt     # Python dependencies
+│   ├── conftest.py           # Shared fixtures
+│   ├── test_xml_handlers.py  # XML parsing and building (25+ tests)
+│   ├── test_xsd_validator.py # XSD validation (20+ tests)
+│   ├── test_producer.py      # Publisher + XSD gate + retry (15+ tests)
+│   ├── test_consumer.py      # Consumer handlers (10+ tests)
+│   ├── test_database.py      # DB service CRUD (30+ tests)
+│   ├── test_graph_client.py  # Graph API HTTP client (14 tests)
+│   └── test_graph_service.py # Graph sync orchestration (13 tests)
+│
+├── docs/
+│   ├── MESSAGE_CONTRACTS.md  # XML examples and routing keys
+│   ├── GRAPH_API.md          # Graph API setup and flows
+│   └── ERROR_HANDLING.md     # Error catalogue and recovery
+│
+├── .env.example              # Environment variable template
+├── docker-compose.yml
+├── Dockerfile
+└── requirements.txt
 ```
 
 ---
 
-## Snel starten
+## Quick Start
 
-### Vereisten
+### Requirements
 
 - Docker Desktop
 - Python 3.12+
 
-### 1. Credentials instellen
+### 1. Set credentials
 
 ```bash
 cp .env.example .env
 ```
 
-Vul `.env` in met de productie-credentials (gekregen van Tom/infra).
-Zie [Environment variables](#environment-variables) voor een overzicht van alle variabelen.
+Fill in `.env` with your credentials. See [Environment Variables](#environment-variables) below.  
+For local development use `.env.local` with `RABBITMQ_HOST=localhost`.
 
-Voor lokaal ontwikkelen, maak `.env.local` aan op basis van `.env.example` met `RABBITMQ_HOST=localhost` en `RABBITMQ_PORT=5672`.
+### 2. Start
 
-### 2. Starten
-
-**Productie** (verbinding met remote broker):
 ```powershell
+# Production (connects to remote broker)
 docker compose up -d
-```
 
-**Lokaal** (eigen RabbitMQ container):
-```powershell
+# Local (spins up its own RabbitMQ)
 $env:ENV_FILE=".env.local"; docker compose --profile local up -d
 ```
 
-### 3. Logs bekijken
+### 3. Run migrations
+
+```bash
+psql postgresql://user:pass@localhost:5433/planning_db < migrations/002_planning_schema.sql
+psql postgresql://user:pass@localhost:5433/planning_db < migrations/003_graph_sync.sql
+```
+
+### 4. Logs
 
 ```powershell
-# Planning service
 docker compose logs -f planning-service
 ```
 
-### 4. Stoppen
-
-```powershell
-docker compose down
-```
-
 ---
 
-## Lokaal ontwikkelen (zonder Docker)
-
-### Virtual environment
+## Local Development (without Docker)
 
 ```powershell
 python -m venv .venv
-.venv\Scripts\activate
-pip install -r requirements.txt
+.venv\Scripts\pip install -r requirements.txt
 ```
 
-### Consumer starten
-
+Start consumer:
 ```powershell
-python consumer.py
+.venv\Scripts\python consumer.py
 ```
 
-Verwachte output:
-```
-INFO:__main__:Health endpoint gestart op poort 30050
-INFO:__main__:Consumer gestart | exchange=calendar.exchange | queue=planning.calendar.invite | routing_key=calendar.invite | vhost=/
-```
-
-### Producer testen
-
+Test publisher:
 ```powershell
-python producer.py
+# Publish all message types
+.venv\Scripts\python producer.py
+
+# Publish specific type
+.venv\Scripts\python producer.py created
+.venv\Scripts\python producer.py updated
+.venv\Scripts\python producer.py deleted
 ```
-
-Verwachte output:
-```
-INFO:__main__:Message sent with routing key 'planning.session.created'
-INFO:__main__:✓ Message successfully sent to RabbitMQ
-```
-
-### End-to-end test
-
-Start de consumer in terminal 1, stuur een testbericht in terminal 2:
-
-```powershell
-# Terminal 2
-python test_send.py
-```
-
-Verwachte output in terminal 1:
-```
-INFO:__main__:calendar.invite ontvangen | message_id=... | session_id=sess-test-001 | title=Test sessie | ...
-```
-
----
-
-## XML-berichtformaat
-
-Alle XML-veldnamen zijn **snake_case**, enum-waarden zijn **lowercase**. Dit is verplicht door de projectstandaard (v3).
-
-### session_created — Routing key: `planning.session.created`
-
-```xml
-<message xmlns="urn:integration:planning:v1">
-  <header>
-    <message_id>550e8400-e29b-41d4-a716-446655440000</message_id>
-    <timestamp>2026-05-15T09:00:00Z</timestamp>
-    <source>planning</source>
-    <type>session_created</type>
-    <version>1.0</version>
-    <correlation_id>corr-uuid-hier</correlation_id>
-  </header>
-  <body>
-    <session_id>sess-uuid-001</session_id>
-    <title>Keynote: AI in de zorgsector</title>
-    <start_datetime>2026-05-15T14:00:00Z</start_datetime>
-    <end_datetime>2026-05-15T15:00:00Z</end_datetime>
-    <location>Aula A - Campus Jette</location>
-    <session_type>keynote</session_type>
-    <status>published</status>
-    <max_attendees>120</max_attendees>
-    <current_attendees>0</current_attendees>
-  </body>
-</message>
-```
-
-### calendar.invite — Routing key: `calendar.invite` *(inkomend)*
-
-```xml
-<message xmlns="urn:integration:planning:v1">
-  <header>
-    <message_id>msg-uuid</message_id>
-    <timestamp>2026-05-15T09:00:00Z</timestamp>
-    <source>frontend</source>
-    <type>calendar.invite</type>
-  </header>
-  <body>
-    <session_id>sess-uuid-001</session_id>
-    <title>Keynote: AI in de zorgsector</title>
-    <start_datetime>2026-05-15T14:00:00Z</start_datetime>
-    <end_datetime>2026-05-15T15:00:00Z</end_datetime>
-    <location>online</location>
-  </body>
-</message>
-```
-
----
-
-## RabbitMQ-configuratie
-
-| | Consumer | Producer |
-|---|---|---|
-| **Exchange** | `calendar.exchange` | `planning.exchange` |
-| **Queue** | `planning.calendar.invite` | — |
-| **Routing key** | `calendar.invite` | `planning.session.created` |
-| **Type** | topic | topic |
-
-**Broker:**
-
-| Omgeving | Host | Poort |
-|---|---|---|
-| Productie (AMQP) | zie `.env` | `30000` |
-| Productie (UI) | zie `.env` | `30001` |
-| Lokaal (AMQP) | `localhost` | `5672` |
-| Lokaal (UI) | `localhost` | `15672` |
-
----
-
-## Heartbeat Sidecar
-
-De heartbeat wordt verzorgd door de gedeelde sidecar-image van Team Infra. Die controleert elke seconde of `planning-service:30050` bereikbaar is en stuurt een heartbeat naar RabbitMQ.
-
-De planning-service exposeert een minimale health endpoint op poort **30050** die `ok` teruggeeft.
-
-Status bekijken via de RabbitMQ UI → Exchange `heartbeat`, of in Kibana (Team Controlroom).
-
----
-
-## Microsoft Graph API *(coming soon)*
-
-De planning-service zal integreren met de **Microsoft Graph API** om events rechtstreeks aan te maken in de Outlook kalender van de gebruiker.
-
-**Vereisten:**
-- Azure App Registration (`client_id`, `client_secret`, `tenant_id`) — te verkrijgen bij de prof
-- OAuth 2.0 — gebruiker moet inloggen met Microsoft account
-- Permission: `Calendars.ReadWrite`
-
-**Flow:**
-```
-[Gebruiker logt in via Microsoft OAuth]
-        ↓
-[Planning-service ontvangt access token]
-        ↓
-[Graph API: POST /me/events]
-        ↓
-[Event verschijnt in Outlook kalender van de gebruiker]
-```
-
-> ⚠️ **Nog niet geïmplementeerd.** Wacht op Azure App Registration credentials van de prof.
-
----
-
-## Environment variables
-
-| Variable | Verplicht | Beschrijving |
-|---|---|---|
-| `RABBITMQ_HOST` | ja | Hostnaam van de broker |
-| `RABBITMQ_PORT` | ja | AMQP-poort (`30000` prod / `5672` lokaal) |
-| `RABBITMQ_USER` | ja | Gebruikersnaam (gekregen van infra) |
-| `RABBITMQ_PASS` | ja | Wachtwoord (gekregen van infra) |
-| `RABBITMQ_VHOST` | ja | Virtual host (standaard: `/`) |
-
-> Gebruik `.env.example` als basis. Commit **nooit** `.env` of `.env.local` naar git.
 
 ---
 
 ## Tests
 
 ```powershell
-# Installeer pytest (eenmalig)
-.venv\Scripts\pip install pytest
-
-# Alle tests uitvoeren
+# All tests
 .venv\Scripts\pytest tests/ -v
+
+# By area
+.venv\Scripts\pytest tests/test_xsd_validator.py -v    # XSD validation
+.venv\Scripts\pytest tests/test_producer.py -v         # Publisher + retry
+.venv\Scripts\pytest tests/test_xml_handlers.py -v     # XML parsing/building
+.venv\Scripts\pytest tests/test_graph_client.py -v     # Graph API client
+.venv\Scripts\pytest tests/test_graph_service.py -v    # Graph sync service
+.venv\Scripts\pytest tests/test_consumer.py -v         # Consumer handlers
+.venv\Scripts\pytest tests/test_database.py -v         # Database CRUD
+
+# With coverage
+.venv\Scripts\pytest tests/ --cov=. --cov-report=html
 ```
 
-Tests dekken:
-- XML-generatie en veldvalidatie (producer)
-- XML-parsing, ontbrekende velden en foutafhandeling (consumer)
-- RabbitMQ ack/nack gedrag (consumer)
-- Verbindingsfouten en ontbrekende credentials (producer)
+Total: **125+ tests** across 7 test files.
 
 ---
 
-## Voor andere teams — berichten sturen naar Planning
+## RabbitMQ Configuration
 
-Om een `calendar.invite` te sturen naar de planning-service:
+| | Consumer | Producer |
+|---|---|---|
+| **Exchanges** | `calendar.exchange`, `planning.exchange` | `planning.exchange` |
+| **Queues** | `planning.calendar.invite`, `planning.session.events` | — |
+| **Routing keys (in)** | `calendar.invite`, `planning.session.#` | — |
+| **Routing keys (out)** | — | `planning.calendar.invite.confirmed`, `planning.session.created`, `planning.session.updated`, `planning.session.deleted`, `planning.session.view_response` |
 
-```python
-channel.exchange_declare(exchange="calendar.exchange", exchange_type="topic", durable=True)
-channel.basic_publish(
-    exchange="calendar.exchange",
-    routing_key="calendar.invite",
-    body=xml.encode("utf-8"),
-    properties=pika.BasicProperties(content_type="application/xml", delivery_mode=2)
-)
-```
-
-Verplichte velden in `<body>`: `session_id`, `title`, `start_datetime`, `end_datetime`.
+| Environment | Host | Port |
+|---|---|---|
+| Production (AMQP) | see `.env` | `30000` |
+| Production (UI) | see `.env` | `30001` |
+| Local (AMQP) | `localhost` | `5672` |
+| Local (UI) | `localhost` | `15672` |
 
 ---
 
-## Team Planning
+## Environment Variables
 
-Desideriushogeschool — Integratieproject Groep Planning
+| Variable | Required | Description |
+|---|---|---|
+| `RABBITMQ_HOST` | yes | Broker hostname |
+| `RABBITMQ_PORT` | yes | AMQP port (`30000` prod / `5672` local) |
+| `RABBITMQ_USER` | yes | Username |
+| `RABBITMQ_PASS` | yes | Password |
+| `RABBITMQ_VHOST` | yes | Virtual host (default: `/`) |
+| `POSTGRES_DB` | yes | Database name |
+| `POSTGRES_USER` | yes | Database user |
+| `POSTGRES_PASSWORD` | yes | Database password |
+| `AZURE_TENANT_ID` | no | Azure AD tenant ID (Graph API) |
+| `AZURE_CLIENT_ID` | no | App registration client ID (Graph API) |
+| `AZURE_CLIENT_SECRET` | no | App registration client secret (Graph API) |
+| `GRAPH_CALENDAR_USER` | no | Mailbox UPN to manage via Graph API |
+
+> Never commit `.env` or `.env.local` to git.  
+> Graph API variables are optional — if absent, Outlook sync is disabled gracefully.
+
+---
+
+## Dashboards
+
+| Tool | URL |
+|---|---|
+| RabbitMQ UI (local) | http://localhost:15672 |
+| pgAdmin (local) | http://localhost:5050 |
+| Health check | http://localhost:30050 |
+| **Sync Dashboard** | **http://localhost:8088** |
+
+---
+
+## Team
+
+Desideriushogeschool — Integration Project Group 1 — Planning Team

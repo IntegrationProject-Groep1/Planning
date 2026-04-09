@@ -209,11 +209,37 @@ class SessionViewResponseMessage:
 
 
 # ============================================================================
+# calendar.invite.confirmed (OUTGOING / RESPONSE)
+# ============================================================================
+
+@dataclass
+class CalendarInviteConfirmedBody:
+    """Body of calendar.invite.confirmed message."""
+    session_id: str
+    original_message_id: str
+    status: str  # "confirmed" | "failed"
+
+
+@dataclass
+class CalendarInviteConfirmedMessage:
+    """Complete calendar.invite.confirmed message."""
+    header: MessageHeader
+    body: CalendarInviteConfirmedBody
+
+    def to_dict(self) -> dict:
+        return {
+            "header": asdict(self.header),
+            "body": asdict(self.body),
+        }
+
+
+# ============================================================================
 # MESSAGE TYPES MAPPING
 # ============================================================================
 
 MESSAGE_TYPES = {
     "calendar.invite": CalendarInviteMessage,
+    "calendar.invite.confirmed": CalendarInviteConfirmedMessage,
     "session_created": SessionCreatedMessage,
     "session_updated": SessionUpdatedMessage,
     "session_deleted": SessionDeletedMessage,

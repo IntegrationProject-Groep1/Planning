@@ -16,6 +16,7 @@ SCHEMAS_DIR = os.path.join(os.path.dirname(__file__), "schemas")
 # Map message type values to XSD file names (without .xsd extension)
 _SCHEMA_MAP: dict[str, str] = {
     "calendar.invite": "calendar_invite",
+    "calendar.invite.confirmed": "calendar_invite_confirmed",
     "session_created": "session_created",
     "session_updated": "session_updated",
     "session_deleted": "session_deleted",

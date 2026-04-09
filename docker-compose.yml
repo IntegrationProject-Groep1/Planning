@@ -21,7 +21,7 @@ services:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     ports:
-      - "5433:5432"
+      - "30051:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     networks:
@@ -42,7 +42,7 @@ services:
       - ./pgadmin/servers.json:/pgadmin4/servers.json:ro
       - ./pgadmin/pgpass:/pgpass:ro
     ports:
-      - "5050:80"
+      - "30052:80"
     depends_on:
       - db
     networks:
@@ -55,8 +55,9 @@ services:
     volumes:
       - ./migrations:/migrations:ro
     command: >
-      sh -c "psql postgresql://$${POSTGRES_USER}:$${POSTGRES_PASSWORD}@db:5432/$${POSTGRES_DB} -f /migrations/001_initial.sql && 
-             psql postgresql://$${POSTGRES_USER}:$${POSTGRES_PASSWORD}@db:5432/$${POSTGRES_DB} -f /migrations/002_planning_schema.sql && 
+      sh -c "psql postgresql://$${POSTGRES_USER}:$${POSTGRES_PASSWORD}@db:5432/$${POSTGRES_DB} -f /migrations/001_initial.sql &&
+             psql postgresql://$${POSTGRES_USER}:$${POSTGRES_PASSWORD}@db:5432/$${POSTGRES_DB} -f /migrations/002_planning_schema.sql &&
+             psql postgresql://$${POSTGRES_USER}:$${POSTGRES_PASSWORD}@db:5432/$${POSTGRES_DB} -f /migrations/003_graph_sync.sql &&
              echo 'Migrations completed.'"
     depends_on:
       db:

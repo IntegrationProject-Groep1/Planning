@@ -12,28 +12,25 @@ from graph_client import GraphClient, GraphClientError
 # Fixtures
 # ---------------------------------------------------------------------------
 
-TENANT_ID = "test-tenant-id"
 CLIENT_ID = "test-client-id"
 CLIENT_SECRET = "test-secret"
-CALENDAR_USER = "planning@test.onmicrosoft.com"
 FAKE_TOKEN = "fake-access-token"
+FAKE_ACCOUNT = {"username": "planning@test.onmicrosoft.com"}
 
 
 @pytest.fixture
 def client(mocker):
-    """GraphClient with MSAL mocked out so no real auth happens."""
+    """GraphClient with MSAL and token cache mocked out."""
+    mocker.patch("graph_client._load_token_cache", return_value=MagicMock())
+    mocker.patch("graph_client._save_token_cache")
+
     mock_msal = mocker.patch("graph_client.msal.ConfidentialClientApplication")
     mock_app = MagicMock()
-    mock_app.acquire_token_silent.return_value = None
-    mock_app.acquire_token_for_client.return_value = {"access_token": FAKE_TOKEN}
+    mock_app.get_accounts.return_value = [FAKE_ACCOUNT]
+    mock_app.acquire_token_silent.return_value = {"access_token": FAKE_TOKEN}
     mock_msal.return_value = mock_app
 
-    return GraphClient(
-        tenant_id=TENANT_ID,
-        client_id=CLIENT_ID,
-        client_secret=CLIENT_SECRET,
-        calendar_user=CALENDAR_USER,
-    )
+    return GraphClient(client_id=CLIENT_ID, client_secret=CLIENT_SECRET)
 
 
 # ---------------------------------------------------------------------------
@@ -41,20 +38,17 @@ def client(mocker):
 # ---------------------------------------------------------------------------
 
 class TestGraphClientConstruction:
-    def test_missing_credentials_raises(self):
+    def test_missing_credentials_raises(self, mocker):
         """GraphClient without credentials should raise GraphClientError."""
+        mocker.patch("graph_client._load_token_cache", return_value=MagicMock())
         with pytest.raises(GraphClientError, match="credentials not configured"):
-            GraphClient(tenant_id="", client_id="", client_secret="")
+            GraphClient(client_id="", client_secret="")
 
     def test_valid_credentials_constructs(self, mocker):
+        mocker.patch("graph_client._load_token_cache", return_value=MagicMock())
         mocker.patch("graph_client.msal.ConfidentialClientApplication")
-        client = GraphClient(
-            tenant_id=TENANT_ID,
-            client_id=CLIENT_ID,
-            client_secret=CLIENT_SECRET,
-            calendar_user=CALENDAR_USER,
-        )
-        assert client._calendar_user == CALENDAR_USER
+        client = GraphClient(client_id=CLIENT_ID, client_secret=CLIENT_SECRET)
+        assert client._client_id == CLIENT_ID
 
 
 # ---------------------------------------------------------------------------
@@ -110,22 +104,6 @@ class TestCreateEvent:
             client.create_event(
                 session_id="sess-001",
                 title="Test",
-                start_datetime="2026-05-15T14:00:00Z",
-                end_datetime="2026-05-15T15:00:00Z",
-            )
-
-    def test_create_event_no_calendar_user_raises(self, mocker):
-        """create_event raises when GRAPH_CALENDAR_USER is not set."""
-        mocker.patch("graph_client.msal.ConfidentialClientApplication")
-        client = GraphClient(
-            tenant_id=TENANT_ID,
-            client_id=CLIENT_ID,
-            client_secret=CLIENT_SECRET,
-            calendar_user="",
-        )
-        with pytest.raises(GraphClientError, match="GRAPH_CALENDAR_USER"):
-            client.create_event(
-                session_id="s", title="t",
                 start_datetime="2026-05-15T14:00:00Z",
                 end_datetime="2026-05-15T15:00:00Z",
             )
@@ -212,18 +190,17 @@ class TestCancelEvent:
 
 class TestTokenAcquisition:
     def test_uses_cached_token_when_available(self, mocker):
-        """MSAL silent token is used when available — for_client is not called."""
+        """Silent token from cache is used — no interactive flow is triggered."""
+        mocker.patch("graph_client._load_token_cache", return_value=MagicMock())
+        mocker.patch("graph_client._save_token_cache")
+
         mock_msal = mocker.patch("graph_client.msal.ConfidentialClientApplication")
         mock_app = MagicMock()
+        mock_app.get_accounts.return_value = [FAKE_ACCOUNT]
         mock_app.acquire_token_silent.return_value = {"access_token": "cached-token"}
         mock_msal.return_value = mock_app
 
-        client = GraphClient(
-            tenant_id=TENANT_ID,
-            client_id=CLIENT_ID,
-            client_secret=CLIENT_SECRET,
-            calendar_user=CALENDAR_USER,
-        )
+        client = GraphClient(client_id=CLIENT_ID, client_secret=CLIENT_SECRET)
 
         mock_response = MagicMock()
         mock_response.ok = True
@@ -236,27 +213,21 @@ class TestTokenAcquisition:
             end_datetime="2026-05-15T15:00:00Z",
         )
 
-        mock_app.acquire_token_for_client.assert_not_called()
+        mock_app.acquire_token_silent.assert_called_once()
 
-    def test_token_failure_raises(self, mocker):
-        """Missing access_token in MSAL result raises GraphClientError."""
+    def test_no_cached_account_raises(self, mocker):
+        """No cached accounts raises GraphClientError asking user to run auth_setup."""
+        mocker.patch("graph_client._load_token_cache", return_value=MagicMock())
+        mocker.patch("graph_client._save_token_cache")
+
         mock_msal = mocker.patch("graph_client.msal.ConfidentialClientApplication")
         mock_app = MagicMock()
-        mock_app.acquire_token_silent.return_value = None
-        mock_app.acquire_token_for_client.return_value = {
-            "error": "invalid_client",
-            "error_description": "Bad credentials",
-        }
+        mock_app.get_accounts.return_value = []
         mock_msal.return_value = mock_app
 
-        client = GraphClient(
-            tenant_id=TENANT_ID,
-            client_id=CLIENT_ID,
-            client_secret=CLIENT_SECRET,
-            calendar_user=CALENDAR_USER,
-        )
+        client = GraphClient(client_id=CLIENT_ID, client_secret=CLIENT_SECRET)
 
-        with pytest.raises(GraphClientError, match="Failed to acquire"):
+        with pytest.raises(GraphClientError, match="auth_setup.py"):
             client.create_event(
                 session_id="s", title="t",
                 start_datetime="2026-05-15T14:00:00Z",

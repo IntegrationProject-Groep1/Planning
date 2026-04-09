@@ -1,16 +1,15 @@
 """
 Microsoft Graph API client for Outlook calendar management.
 
-Authentication uses the OAuth2 client credentials flow (app-only).
-Requires an Azure app registration with the Calendars.ReadWrite
-application permission granted and admin-consented.
+Authentication uses the OAuth2 delegated (authorization code) flow.
+Run auth_setup.py once to authenticate and persist the token cache.
+The service then uses the cached refresh token automatically.
 
 Required environment variables:
-    AZURE_TENANT_ID      – Azure AD tenant ID
     AZURE_CLIENT_ID      – App registration client ID
     AZURE_CLIENT_SECRET  – App registration client secret
-    GRAPH_CALENDAR_USER  – UPN or object ID of the mailbox to manage
-                           (e.g. planning@yourdomain.onmicrosoft.com)
+    TOKEN_CACHE_FILE     – Path to the MSAL token cache JSON file
+                           (default: token_cache.json)
 """
 
 import logging
@@ -23,50 +22,63 @@ import requests
 logger = logging.getLogger(__name__)
 
 GRAPH_BASE_URL = "https://graph.microsoft.com/v1.0"
-_SCOPE = ["https://graph.microsoft.com/.default"]
+_AUTHORITY = "https://login.microsoftonline.com/common"
+_SCOPES = ["User.Read", "Calendars.ReadWrite"]
 
-# Read once at import time; values can still be overridden via env before
-# GraphClient() is constructed.
-_TENANT_ID = os.getenv("AZURE_TENANT_ID", "")
 _CLIENT_ID = os.getenv("AZURE_CLIENT_ID", "")
 _CLIENT_SECRET = os.getenv("AZURE_CLIENT_SECRET", "")
-_CALENDAR_USER = os.getenv("GRAPH_CALENDAR_USER", "")
+_TOKEN_CACHE_FILE = os.getenv("TOKEN_CACHE_FILE", "token_cache.json")
 
 
 class GraphClientError(Exception):
-    """Raised when a Graph API call fails after all retries."""
+    """Raised when a Graph API call fails."""
+
+
+def _load_token_cache(cache_file: str) -> msal.SerializableTokenCache:
+    cache = msal.SerializableTokenCache()
+    if os.path.exists(cache_file):
+        with open(cache_file) as f:
+            cache.deserialize(f.read())
+    return cache
+
+
+def _save_token_cache(cache: msal.SerializableTokenCache, cache_file: str) -> None:
+    if cache.has_state_changed:
+        with open(cache_file, "w") as f:
+            f.write(cache.serialize())
 
 
 class GraphClient:
     """
     Thin wrapper around Microsoft Graph API for Outlook calendar events.
 
-    One instance is safe to reuse across calls — MSAL caches the token
-    internally and refreshes it transparently when it expires.
+    Uses OAuth2 delegated auth — tokens are cached to disk and refreshed
+    automatically via the offline_access scope. Run auth_setup.py first
+    to perform the initial interactive login.
     """
 
     def __init__(
         self,
-        tenant_id: str = "",
         client_id: str = "",
         client_secret: str = "",
-        calendar_user: str = "",
+        cache_file: str = "",
     ):
-        self._tenant_id = tenant_id or _TENANT_ID
         self._client_id = client_id or _CLIENT_ID
         self._client_secret = client_secret or _CLIENT_SECRET
-        self._calendar_user = calendar_user or _CALENDAR_USER
+        self._cache_file = cache_file or _TOKEN_CACHE_FILE
 
-        if not all([self._tenant_id, self._client_id, self._client_secret]):
+        if not all([self._client_id, self._client_secret]):
             raise GraphClientError(
                 "Graph API credentials not configured. "
-                "Set AZURE_TENANT_ID, AZURE_CLIENT_ID, and AZURE_CLIENT_SECRET."
+                "Set AZURE_CLIENT_ID and AZURE_CLIENT_SECRET."
             )
 
+        self._cache = _load_token_cache(self._cache_file)
         self._msal_app = msal.ConfidentialClientApplication(
             self._client_id,
-            authority=f"https://login.microsoftonline.com/{self._tenant_id}",
+            authority=_AUTHORITY,
             client_credential=self._client_secret,
+            token_cache=self._cache,
         )
 
     # ------------------------------------------------------------------
@@ -74,14 +86,15 @@ class GraphClient:
     # ------------------------------------------------------------------
 
     def _get_token(self) -> str:
-        """Acquire an access token, using the MSAL cache when possible."""
-        result = self._msal_app.acquire_token_silent(_SCOPE, account=None)
-        if not result:
-            result = self._msal_app.acquire_token_for_client(scopes=_SCOPE)
-        if "access_token" not in result:
+        """Acquire an access token from the MSAL cache (silent refresh)."""
+        accounts = self._msal_app.get_accounts()
+        result = None
+        if accounts:
+            result = self._msal_app.acquire_token_silent(_SCOPES, account=accounts[0])
+        _save_token_cache(self._cache, self._cache_file)
+        if not result or "access_token" not in result:
             raise GraphClientError(
-                f"Failed to acquire Graph API token: "
-                f"{result.get('error')} – {result.get('error_description')}"
+                "No valid token found. Run auth_setup.py to authenticate first."
             )
         return result["access_token"]
 
@@ -91,8 +104,9 @@ class GraphClient:
             "Content-Type": "application/json",
         }
 
-    def _user_events_url(self, event_id: Optional[str] = None) -> str:
-        base = f"{GRAPH_BASE_URL}/users/{self._calendar_user}/calendar/events"
+    @staticmethod
+    def _events_url(event_id: Optional[str] = None) -> str:
+        base = f"{GRAPH_BASE_URL}/me/calendar/events"
         return f"{base}/{event_id}" if event_id else base
 
     @staticmethod
@@ -135,11 +149,6 @@ class GraphClient:
         Raises:
             GraphClientError on failure.
         """
-        if not self._calendar_user:
-            raise GraphClientError(
-                "GRAPH_CALENDAR_USER is not set — cannot create calendar event."
-            )
-
         payload = {
             "subject": title,
             "start": {"dateTime": start_datetime, "timeZone": "UTC"},
@@ -150,7 +159,7 @@ class GraphClient:
             payload["location"] = {"displayName": location}
 
         response = requests.post(
-            self._user_events_url(),
+            self._events_url(),
             json=payload,
             headers=self._headers(),
             timeout=15,
@@ -186,11 +195,6 @@ class GraphClient:
         Raises:
             GraphClientError on failure.
         """
-        if not self._calendar_user:
-            raise GraphClientError(
-                "GRAPH_CALENDAR_USER is not set — cannot update calendar event."
-            )
-
         payload: dict = {
             "subject": title,
             "start": {"dateTime": start_datetime, "timeZone": "UTC"},
@@ -200,7 +204,7 @@ class GraphClient:
             payload["location"] = {"displayName": location}
 
         response = requests.patch(
-            self._user_events_url(event_id),
+            self._events_url(event_id) + "?sendUpdates=all",
             json=payload,
             headers=self._headers(),
             timeout=15,
@@ -219,13 +223,8 @@ class GraphClient:
         Raises:
             GraphClientError on failure.
         """
-        if not self._calendar_user:
-            raise GraphClientError(
-                "GRAPH_CALENDAR_USER is not set — cannot cancel calendar event."
-            )
-
         response = requests.post(
-            f"{self._user_events_url(event_id)}/cancel",
+            f"{self._events_url(event_id)}/cancel",
             json={"comment": comment},
             headers=self._headers(),
             timeout=15,
