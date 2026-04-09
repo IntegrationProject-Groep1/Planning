@@ -26,6 +26,7 @@ from calendar_service import (
     SessionEventService,
     SessionViewRequestService,
 )
+from graph_service import GraphService
 
 load_dotenv()
 
@@ -105,6 +106,15 @@ def handle_calendar_invite(msg: CalendarInviteMessage, channel, delivery_tag):
 
         # Update message log
         MessageLog.update_message_status(msg.header.message_id, "processed")
+
+        # Create Outlook event (non-blocking — failure is logged, not nacked)
+        GraphService.sync_created(
+            session_id=msg.body.session_id,
+            title=msg.body.title,
+            start_datetime=msg.body.start_datetime,
+            end_datetime=msg.body.end_datetime,
+            location=msg.body.location or "",
+        )
 
         logger.info("calendar.invite processed successfully | message_id=%s", msg.header.message_id)
         channel.basic_ack(delivery_tag=delivery_tag)
@@ -223,6 +233,15 @@ def handle_session_updated(msg: SessionUpdatedMessage, channel, delivery_tag):
 
         MessageLog.update_message_status(msg.header.message_id, "processed")
 
+        # Update Outlook event (non-blocking)
+        GraphService.sync_updated(
+            session_id=msg.body.session_id,
+            title=msg.body.title,
+            start_datetime=msg.body.start_datetime,
+            end_datetime=msg.body.end_datetime,
+            location=msg.body.location or "",
+        )
+
         logger.info("session_updated processed successfully | message_id=%s", msg.header.message_id)
         channel.basic_ack(delivery_tag=delivery_tag)
 
@@ -272,6 +291,12 @@ def handle_session_deleted(msg: SessionDeletedMessage, channel, delivery_tag):
         )
 
         MessageLog.update_message_status(msg.header.message_id, "processed")
+
+        # Cancel Outlook event (non-blocking)
+        GraphService.sync_deleted(
+            session_id=msg.body.session_id,
+            reason=msg.body.reason or "Session cancelled",
+        )
 
         logger.info("session_deleted processed successfully | message_id=%s", msg.header.message_id)
         channel.basic_ack(delivery_tag=delivery_tag)
