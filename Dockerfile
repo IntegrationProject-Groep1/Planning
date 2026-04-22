@@ -13,6 +13,7 @@ COPY producer.py .
 COPY xml_models.py .
 COPY xml_handlers.py .
 COPY calendar_service.py .
+COPY db_config.py .
 COPY graph_service.py .
 COPY graph_client.py .
 COPY token_service.py .
