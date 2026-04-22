@@ -61,8 +61,8 @@ class GraphClient:
 
     def __init__(
         self,
-        client_id: str = "",
-        client_secret: str = "",
+        client_id: Optional[str] = None,
+        client_secret: Optional[str] = None,
         cache_file: str = "",
         access_token: str = "",
     ):
@@ -70,8 +70,8 @@ class GraphClient:
 
         if not access_token:
             # Fall back to the shared MSAL file-cache flow
-            self._client_id = client_id or _CLIENT_ID
-            self._client_secret = client_secret or _CLIENT_SECRET
+            self._client_id = client_id if client_id is not None else _CLIENT_ID
+            self._client_secret = client_secret if client_secret is not None else _CLIENT_SECRET
             self._cache_file = cache_file or _TOKEN_CACHE_FILE
 
             if not all([self._client_id, self._client_secret]):

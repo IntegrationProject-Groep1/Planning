@@ -69,20 +69,23 @@ def _upsert_sync(session_id: str, event_id: str, status: str = "synced") -> None
 
 def _mark_sync_failed(session_id: str, error: str) -> None:
     """Record a sync failure so it can be retried later."""
-    with _get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                INSERT INTO graph_sync
-                    (session_id, graph_event_id, sync_status, error_message, last_synced_at)
-                VALUES (%s, NULL, 'failed', %s, NOW())
-                ON CONFLICT (session_id) DO UPDATE SET
-                    sync_status   = 'failed',
-                    error_message = EXCLUDED.error_message,
-                    last_synced_at = NOW()
-                """,
-                (session_id, error),
-            )
+    try:
+        with _get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO graph_sync
+                        (session_id, graph_event_id, sync_status, error_message, last_synced_at)
+                    VALUES (%s, NULL, 'failed', %s, NOW())
+                    ON CONFLICT (session_id) DO UPDATE SET
+                        sync_status   = 'failed',
+                        error_message = EXCLUDED.error_message,
+                        last_synced_at = NOW()
+                    """,
+                    (session_id, error),
+                )
+    except Exception as db_exc:
+        logger.warning("Could not persist sync failure for session_id=%s: %s", session_id, db_exc)
 
 
 def _get_event_id(session_id: str) -> Optional[str]:
