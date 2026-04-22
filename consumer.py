@@ -1,18 +1,38 @@
+"""
+Planning service consumer.
+Listens on RabbitMQ for incoming messages and routes them to appropriate handlers.
+Supports: calendar.invite, session_created, session_updated, session_deleted, session_view_request
+"""
+
+import json
 import pika
 import os
 import logging
 import threading
-import json
-import uuid
-from functools import lru_cache
-from pathlib import Path
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from urllib.parse import urlparse
-from lxml import etree
 from dotenv import load_dotenv
 
 load_dotenv()
+
+from xml_handlers import parse_message
+from xml_models import (
+    CalendarInviteMessage,
+    SessionCreatedMessage,
+    SessionUpdatedMessage,
+    SessionDeletedMessage,
+    SessionViewRequestMessage,
+)
+from calendar_service import (
+    MessageLog,
+    SessionService,
+    CalendarInviteService,
+    SessionEventService,
+    SessionViewRequestService,
+)
+from graph_service import GraphService
+from token_service import TokenService
+from producer import publish_calendar_invite_confirmed
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -23,37 +43,18 @@ RABBITMQ_USER = os.getenv("RABBITMQ_USER")
 RABBITMQ_PASS = os.getenv("RABBITMQ_PASS")
 RABBITMQ_VHOST = os.getenv("RABBITMQ_VHOST", "/")
 
-# Exchange published by the sending team; queue prefixed with our team name
-EXCHANGE_NAME = os.getenv("CALENDAR_EXCHANGE", "calendar.exchange")
-ROUTING_KEY_VIEW_RESPONSE = "planning.session.view.response"
-ROUTING_KEYS = [
-    key.strip()
-    for key in os.getenv(
-        "ROUTING_KEYS",
-        "calendar.invite,planning.session.created,planning.session.updated,planning.session.deleted,planning.session.view.request",
-    ).split(",")
-    if key.strip()
-]
-QUEUE_NAME = "planning.calendar.invite"
+# Shared secret Drupal must send as "Authorization: Bearer <value>"
+_API_TOKEN_SECRET = os.getenv("API_TOKEN_SECRET", "")
 
-REQUIRED_HEADER_FIELDS = {"message_id", "timestamp", "source", "type"}
-REQUIRED_BODY_FIELDS_BY_TYPE = {
-    "calendar.invite": {"session_id", "title", "start_datetime", "end_datetime"},
-    "session_created": {"session_id", "title", "start_datetime", "end_datetime"},
-    "session_updated": {"session_id", "title", "start_datetime", "end_datetime"},
-    "session_deleted": {"session_id"},
-    "session_view_request": set(),
-}
-_XSD_BY_TYPE = {
-    "calendar.invite": "calendar_invite.xsd",
-    "session_created": "session_created.xsd",
-    "session_updated": "session_updated.xsd",
-    "session_deleted": "session_deleted.xsd",
-    "session_view_request": "session_view_request.xsd",
-}
+# Exchange and queue configuration
+CALENDAR_EXCHANGE = os.getenv("CALENDAR_EXCHANGE", "calendar.exchange")
+PLANNING_EXCHANGE = os.getenv("PLANNING_EXCHANGE", "planning.exchange")
+CALENDAR_QUEUE = "planning.calendar.invite"
+SESSION_QUEUE = "planning.session.events"
 
-_SESSIONS: dict[str, dict[str, str | int]] = {}
-_SESSIONS_LOCK = threading.Lock()
+# Route keys to listen on
+CALENDAR_ROUTING_KEY = "calendar.invite"
+SESSION_ROUTING_KEYS = ["planning.session.#"]  # All session events
 
 
 def _require_env(name: str, value: str | None) -> str:
@@ -62,183 +63,326 @@ def _require_env(name: str, value: str | None) -> str:
     return value
 
 
-def _strip_ns(root: etree._Element) -> etree._Element:
-    """Remove namespace prefixes from all element tags so find('header') works."""
-    for elem in root.iter():
-        elem.tag = etree.QName(elem.tag).localname
-    return root
+# ============================================================================
+# MESSAGE HANDLERS
+# ============================================================================
 
-
-@lru_cache(maxsize=None)
-def _load_schema(schema_filename: str) -> etree.XMLSchema:
-    schema_path = Path(__file__).resolve().parent / "xsd" / schema_filename
-    with schema_path.open("rb") as f:
-        return etree.XMLSchema(etree.parse(f))
-
-
-def validate_xml(body: bytes) -> etree._Element | None:
-    """Parse and validate incoming XML. Returns root element or None on failure."""
+def handle_calendar_invite(msg: CalendarInviteMessage, channel, delivery_tag):
+    """Handle calendar.invite message."""
     try:
-        root_with_ns = etree.fromstring(body)
-    except etree.XMLSyntaxError as e:
-        logger.error("Malformed XML: %s", e)
-        return None
-
-    root = _strip_ns(etree.fromstring(body))
-
-    message_type = root.findtext("header/type", default="")
-    schema_filename = _XSD_BY_TYPE.get(message_type)
-    if schema_filename is None:
-        logger.error("Unsupported message type: %s", message_type)
-        return None
-
-    try:
-        schema = _load_schema(schema_filename)
-    except (OSError, etree.XMLSchemaParseError) as e:
-        logger.error("Could not load/parse XSD schema '%s': %s", schema_filename, e)
-        return None
-
-    if not schema.validate(root_with_ns):
-        schema_error = schema.error_log.last_error
-        logger.error(
-            "XML failed XSD validation for type '%s': %s",
-            message_type,
-            schema_error,
+        logger.info(
+            "Handling calendar.invite | message_id=%s | session_id=%s | title=%s",
+            msg.header.message_id,
+            msg.body.session_id,
+            msg.body.title,
         )
-        return None
 
-    header = root.find("header")
-    message_body = root.find("body")
+        # Log message for idempotency
+        if not MessageLog.log_message(
+            msg.header.message_id,
+            "calendar.invite",
+            msg.header.source,
+            msg.header.timestamp,
+            correlation_id=msg.header.correlation_id,
+        ):
+            logger.warning("Duplicate calendar.invite (already processed): %s", msg.header.message_id)
+            channel.basic_ack(delivery_tag=delivery_tag)
+            return
 
-    if header is None or message_body is None:
-        logger.error("Missing <header> or <body> element")
-        return None
+        # Create/update session from invite
+        SessionService.create_or_update(
+            session_id=msg.body.session_id,
+            title=msg.body.title,
+            start_datetime=msg.body.start_datetime,
+            end_datetime=msg.body.end_datetime,
+            location=msg.body.location or "",
+        )
 
-    header_tags = {child.tag for child in header}
-    missing_header = REQUIRED_HEADER_FIELDS - header_tags
-    if missing_header:
-        logger.error("Missing required header fields: %s", missing_header)
-        return None
+        # Store calendar invite
+        CalendarInviteService.create(
+            message_id=msg.header.message_id,
+            timestamp=msg.header.timestamp,
+            source=msg.header.source,
+            type_=msg.header.type,
+            session_id=msg.body.session_id,
+            title=msg.body.title,
+            start_datetime=msg.body.start_datetime,
+            end_datetime=msg.body.end_datetime,
+            location=msg.body.location or "",
+        )
 
-    body_tags = {child.tag for child in message_body}
-    required_body_fields = REQUIRED_BODY_FIELDS_BY_TYPE.get(message_type)
+        # Update message log
+        MessageLog.update_message_status(msg.header.message_id, "processed")
 
-    missing_body = required_body_fields - body_tags
-    if missing_body:
-        logger.error("Missing required body fields: %s", missing_body)
-        return None
+        # Create Outlook event (non-blocking — failure is logged, not nacked)
+        GraphService.sync_created(
+            session_id=msg.body.session_id,
+            title=msg.body.title,
+            start_datetime=msg.body.start_datetime,
+            end_datetime=msg.body.end_datetime,
+            location=msg.body.location or "",
+            user_id=msg.body.user_id or None,
+        )
 
-    return root
+        # Confirm enrollment back to Frontend
+        publish_calendar_invite_confirmed(
+            session_id=msg.body.session_id,
+            original_message_id=msg.header.message_id,
+            status="confirmed",
+            correlation_id=msg.header.correlation_id,
+        )
 
+        logger.info("calendar.invite processed successfully | message_id=%s", msg.header.message_id)
+        channel.basic_ack(delivery_tag=delivery_tag)
 
-def _body_to_session_payload(body: etree._Element) -> dict[str, str | int]:
-    """Build a session payload from message body fields for read endpoints."""
-    payload: dict[str, str | int] = {
-        "session_id": body.findtext("session_id", default=""),
-        "title": body.findtext("title", default=""),
-        "start_datetime": body.findtext("start_datetime", default=""),
-        "end_datetime": body.findtext("end_datetime", default=""),
-        "location": body.findtext("location", default=""),
-        "session_type": body.findtext("session_type", default=""),
-        "status": body.findtext("status", default=""),
-    }
-
-    max_attendees = body.findtext("max_attendees")
-    current_attendees = body.findtext("current_attendees")
-
-    if max_attendees and max_attendees.isdigit():
-        payload["max_attendees"] = int(max_attendees)
-    if current_attendees and current_attendees.isdigit():
-        payload["current_attendees"] = int(current_attendees)
-
-    return payload
-
-
-def upsert_session(payload: dict[str, str | int]) -> None:
-    session_id = str(payload.get("session_id", ""))
-    if not session_id:
-        return
-    with _SESSIONS_LOCK:
-        _SESSIONS[session_id] = payload
-
-
-def delete_session(session_id: str) -> None:
-    with _SESSIONS_LOCK:
-        _SESSIONS.pop(session_id, None)
-
-
-def list_sessions() -> list[dict[str, str | int]]:
-    with _SESSIONS_LOCK:
-        return [dict(v) for _, v in sorted(_SESSIONS.items())]
+    except Exception as e:
+        logger.error("Error handling calendar.invite: %s", e, exc_info=True)
+        MessageLog.update_message_status(msg.header.message_id, "failed", str(e))
+        channel.basic_nack(delivery_tag=delivery_tag, requeue=False)
 
 
-def get_session(session_id: str) -> dict[str, str | int] | None:
-    with _SESSIONS_LOCK:
-        session = _SESSIONS.get(session_id)
-        return dict(session) if session is not None else None
+def handle_session_created(msg: SessionCreatedMessage, channel, delivery_tag):
+    """Handle session_created message (event from other teams)."""
+    try:
+        logger.info(
+            "Handling session_created | message_id=%s | session_id=%s | title=%s",
+            msg.header.message_id,
+            msg.body.session_id,
+            msg.body.title,
+        )
+
+        if not MessageLog.log_message(
+            msg.header.message_id,
+            "session_created",
+            msg.header.source,
+            msg.header.timestamp,
+            correlation_id=msg.header.correlation_id,
+        ):
+            logger.warning("Duplicate session_created: %s", msg.header.message_id)
+            channel.basic_ack(delivery_tag=delivery_tag)
+            return
+
+        # Create session
+        SessionService.create_or_update(
+            session_id=msg.body.session_id,
+            title=msg.body.title,
+            start_datetime=msg.body.start_datetime,
+            end_datetime=msg.body.end_datetime,
+            location=msg.body.location or "",
+            session_type=msg.body.session_type or "keynote",
+            status=msg.body.status or "published",
+            max_attendees=msg.body.max_attendees or 0,
+            current_attendees=msg.body.current_attendees or 0,
+        )
+
+        # Log event
+        SessionEventService.log_event(
+            message_id=msg.header.message_id,
+            timestamp=msg.header.timestamp,
+            source=msg.header.source,
+            event_type="session_created",
+            session_id=msg.body.session_id,
+            version=msg.header.version or "1.0",
+            correlation_id=msg.header.correlation_id,
+            event_data={
+                "title": msg.body.title,
+                "location": msg.body.location,
+                "max_attendees": msg.body.max_attendees,
+            },
+        )
+
+        MessageLog.update_message_status(msg.header.message_id, "processed")
+
+        logger.info("session_created processed successfully | message_id=%s", msg.header.message_id)
+        channel.basic_ack(delivery_tag=delivery_tag)
+
+    except Exception as e:
+        logger.error("Error handling session_created: %s", e, exc_info=True)
+        MessageLog.update_message_status(msg.header.message_id, "failed", str(e))
+        channel.basic_nack(delivery_tag=delivery_tag, requeue=False)
 
 
-def _session_view_response_xml(
-    request_header: etree._Element,
-    requested_session_id: str | None,
-    sessions: list[dict[str, str | int]],
-) -> str:
-    """Build a session_view_response XML message."""
-    root = etree.Element("message", xmlns="urn:integration:planning:v1")
+def handle_session_updated(msg: SessionUpdatedMessage, channel, delivery_tag):
+    """Handle session_updated message."""
+    try:
+        logger.info(
+            "Handling session_updated | message_id=%s | session_id=%s",
+            msg.header.message_id,
+            msg.body.session_id,
+        )
 
-    header = etree.SubElement(root, "header")
-    etree.SubElement(header, "message_id").text = str(uuid.uuid4())
-    etree.SubElement(header, "timestamp").text = datetime.now(timezone.utc).isoformat()
-    etree.SubElement(header, "source").text = "planning"
-    etree.SubElement(header, "type").text = "session_view_response"
-    etree.SubElement(header, "version").text = "1.0"
-    etree.SubElement(header, "correlation_id").text = (
-        request_header.findtext("correlation_id")
-        or request_header.findtext("message_id")
-        or str(uuid.uuid4())
-    )
+        if not MessageLog.log_message(
+            msg.header.message_id,
+            "session_updated",
+            msg.header.source,
+            msg.header.timestamp,
+            correlation_id=msg.header.correlation_id,
+        ):
+            logger.warning("Duplicate session_updated: %s", msg.header.message_id)
+            channel.basic_ack(delivery_tag=delivery_tag)
+            return
 
-    body = etree.SubElement(root, "body")
-    etree.SubElement(body, "request_message_id").text = request_header.findtext("message_id", default="")
-    if requested_session_id:
-        etree.SubElement(body, "requested_session_id").text = requested_session_id
+        # Update session
+        SessionService.create_or_update(
+            session_id=msg.body.session_id,
+            title=msg.body.title,
+            start_datetime=msg.body.start_datetime,
+            end_datetime=msg.body.end_datetime,
+            location=msg.body.location or "",
+            session_type=msg.body.session_type or "keynote",
+            status=msg.body.status or "published",
+            max_attendees=msg.body.max_attendees or 0,
+            current_attendees=msg.body.current_attendees or 0,
+        )
 
-    status = "ok" if sessions else "not_found"
-    etree.SubElement(body, "status").text = status
-    etree.SubElement(body, "session_count").text = str(len(sessions))
+        # Log event
+        SessionEventService.log_event(
+            message_id=msg.header.message_id,
+            timestamp=msg.header.timestamp,
+            source=msg.header.source,
+            event_type="session_updated",
+            session_id=msg.body.session_id,
+            version=msg.header.version or "1.0",
+            correlation_id=msg.header.correlation_id,
+            event_data={"title": msg.body.title, "current_attendees": msg.body.current_attendees},
+        )
 
-    sessions_elem = etree.SubElement(body, "sessions")
-    for session in sessions:
-        session_elem = etree.SubElement(sessions_elem, "session")
-        for key, value in session.items():
-            etree.SubElement(session_elem, key).text = str(value)
+        MessageLog.update_message_status(msg.header.message_id, "processed")
 
-    return etree.tostring(root, encoding="unicode", pretty_print=True)
+        # Update Outlook event (non-blocking)
+        GraphService.sync_updated(
+            session_id=msg.body.session_id,
+            title=msg.body.title,
+            start_datetime=msg.body.start_datetime,
+            end_datetime=msg.body.end_datetime,
+            location=msg.body.location or "",
+        )
+
+        logger.info("session_updated processed successfully | message_id=%s", msg.header.message_id)
+        channel.basic_ack(delivery_tag=delivery_tag)
+
+    except Exception as e:
+        logger.error("Error handling session_updated: %s", e, exc_info=True)
+        MessageLog.update_message_status(msg.header.message_id, "failed", str(e))
+        channel.basic_nack(delivery_tag=delivery_tag, requeue=False)
 
 
-def reset_sessions_store() -> None:
-    """Clear session store (used by tests)."""
-    with _SESSIONS_LOCK:
-        _SESSIONS.clear()
+def handle_session_deleted(msg: SessionDeletedMessage, channel, delivery_tag):
+    """Handle session_deleted message."""
+    try:
+        logger.info(
+            "Handling session_deleted | message_id=%s | session_id=%s",
+            msg.header.message_id,
+            msg.body.session_id,
+        )
+
+        if not MessageLog.log_message(
+            msg.header.message_id,
+            "session_deleted",
+            msg.header.source,
+            msg.header.timestamp,
+            correlation_id=msg.header.correlation_id,
+        ):
+            logger.warning("Duplicate session_deleted: %s", msg.header.message_id)
+            channel.basic_ack(delivery_tag=delivery_tag)
+            return
+
+        # Delete session
+        SessionService.delete(
+            session_id=msg.body.session_id,
+            reason=msg.body.reason or "",
+            deleted_by=msg.body.deleted_by or "system",
+        )
+
+        # Log event
+        SessionEventService.log_event(
+            message_id=msg.header.message_id,
+            timestamp=msg.header.timestamp,
+            source=msg.header.source,
+            event_type="session_deleted",
+            session_id=msg.body.session_id,
+            version=msg.header.version or "1.0",
+            correlation_id=msg.header.correlation_id,
+            event_data={"reason": msg.body.reason, "deleted_by": msg.body.deleted_by},
+        )
+
+        MessageLog.update_message_status(msg.header.message_id, "processed")
+
+        # Cancel Outlook event (non-blocking)
+        GraphService.sync_deleted(
+            session_id=msg.body.session_id,
+            reason=msg.body.reason or "Session cancelled",
+        )
+
+        logger.info("session_deleted processed successfully | message_id=%s", msg.header.message_id)
+        channel.basic_ack(delivery_tag=delivery_tag)
+
+    except Exception as e:
+        logger.error("Error handling session_deleted: %s", e, exc_info=True)
+        MessageLog.update_message_status(msg.header.message_id, "failed", str(e))
+        channel.basic_nack(delivery_tag=delivery_tag, requeue=False)
 
 
-def handle_calendar_invite(root: etree._Element):
-    """Process a validated calendar.invite message."""
-    header = root.find("header")
-    body = root.find("body")
+def handle_session_view_request(msg: SessionViewRequestMessage, channel, delivery_tag):
+    """Handle session_view_request message."""
+    try:
+        logger.info(
+            "Handling session_view_request | message_id=%s | session_id=%s",
+            msg.header.message_id,
+            msg.body.session_id,
+        )
 
-    message_id = header.findtext("message_id")
-    source = header.findtext("source")
-    session_id = body.findtext("session_id")
-    title = body.findtext("title")
-    start_datetime = body.findtext("start_datetime")
-    end_datetime = body.findtext("end_datetime")
-    location = body.findtext("location", default="")
+        if not MessageLog.log_message(
+            msg.header.message_id,
+            "session_view_request",
+            msg.header.source,
+            msg.header.timestamp,
+            correlation_id=msg.header.correlation_id,
+        ):
+            logger.warning("Duplicate session_view_request: %s", msg.header.message_id)
+            channel.basic_ack(delivery_tag=delivery_tag)
+            return
 
-    logger.info(
-        "calendar.invite received | message_id=%s | source=%s | session_id=%s | title=%s | %s -> %s | location=%s",
-        message_id, source, session_id, title, start_datetime, end_datetime, location,
-    )
+        # Log request
+        SessionViewRequestService.log_request(
+            message_id=msg.header.message_id,
+            timestamp=msg.header.timestamp,
+            source=msg.header.source,
+            session_id=msg.body.session_id,
+            version=msg.header.version or "1.0",
+            correlation_id=msg.header.correlation_id,
+        )
+
+        MessageLog.update_message_status(msg.header.message_id, "processed")
+
+        logger.info("session_view_request processed successfully | message_id=%s", msg.header.message_id)
+        channel.basic_ack(delivery_tag=delivery_tag)
+
+    except Exception as e:
+        logger.error("Error handling session_view_request: %s", e, exc_info=True)
+        MessageLog.update_message_status(msg.header.message_id, "failed", str(e))
+        channel.basic_nack(delivery_tag=delivery_tag, requeue=False)
+
+
+# ============================================================================
+# MESSAGE ROUTING
+# ============================================================================
+
+def route_message(msg, channel, delivery_tag):
+    """Route message to appropriate handler based on type."""
+    if isinstance(msg, CalendarInviteMessage):
+        handle_calendar_invite(msg, channel, delivery_tag)
+    elif isinstance(msg, SessionCreatedMessage):
+        handle_session_created(msg, channel, delivery_tag)
+    elif isinstance(msg, SessionUpdatedMessage):
+        handle_session_updated(msg, channel, delivery_tag)
+    elif isinstance(msg, SessionDeletedMessage):
+        handle_session_deleted(msg, channel, delivery_tag)
+    elif isinstance(msg, SessionViewRequestMessage):
+        handle_session_view_request(msg, channel, delivery_tag)
+    else:
+        logger.error("Unknown message type: %s", type(msg))
+        channel.basic_nack(delivery_tag=delivery_tag, requeue=False)
 
     upsert_session(_body_to_session_payload(body))
 
@@ -333,38 +477,26 @@ def handle_session_view_request(root: etree._Element, channel) -> None:
 
 
 def on_message(channel, method, properties, body: bytes):
+    """RabbitMQ message callback."""
     logger.info("Message received on routing key '%s'", method.routing_key)
 
-    root = validate_xml(body)
-    if root is None:
+    # Parse message
+    msg = parse_message(body)
+
+    if msg is None:
         logger.error(
-            "Invalid message - rejected (nack, no requeue)\nPayload:\n%s",
+            "Failed to parse message (nack, no requeue)\nContent:\n%s",
             body.decode("utf-8", errors="replace"),
         )
         channel.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
         return
 
-    message_type = root.find("header").findtext("type", default="")
-
-    if message_type == "calendar.invite":
-        handle_calendar_invite(root)
-    elif message_type == "session_created":
-        handle_session_created(root)
-    elif message_type == "session_updated":
-        handle_session_updated(root)
-    elif message_type == "session_deleted":
-        handle_session_deleted(root)
-    elif message_type == "session_view_request":
-        handle_session_view_request(root, channel)
-    else:
-        logger.error("Unsupported message type after validation: %s", message_type)
-        channel.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
-        return
-
-    channel.basic_ack(delivery_tag=method.delivery_tag)
+    # Route to handler
+    route_message(msg, channel, method.delivery_tag)
 
 
 def start_consumer():
+    """Start the RabbitMQ consumer."""
     user = _require_env("RABBITMQ_USER", RABBITMQ_USER)
     password = _require_env("RABBITMQ_PASS", RABBITMQ_PASS)
 
@@ -381,31 +513,39 @@ def start_consumer():
     connection = pika.BlockingConnection(params)
     channel = connection.channel()
 
-    channel.exchange_declare(
-        exchange=EXCHANGE_NAME,
-        exchange_type="topic",
-        durable=True,
+    # Declare exchanges (durable)
+    channel.exchange_declare(exchange=CALENDAR_EXCHANGE, exchange_type="topic", durable=True)
+    channel.exchange_declare(exchange=PLANNING_EXCHANGE, exchange_type="topic", durable=True)
+
+    # Declare and bind calendar queue
+    channel.queue_declare(queue=CALENDAR_QUEUE, durable=True)
+    channel.queue_bind(
+        queue=CALENDAR_QUEUE, exchange=CALENDAR_EXCHANGE, routing_key=CALENDAR_ROUTING_KEY
     )
 
-    channel.queue_declare(queue=QUEUE_NAME, durable=True)
-    for routing_key in ROUTING_KEYS:
+    # Declare and bind session events queue
+    channel.queue_declare(queue=SESSION_QUEUE, durable=True)
+    for routing_key in SESSION_ROUTING_KEYS:
         channel.queue_bind(
-            queue=QUEUE_NAME,
-            exchange=EXCHANGE_NAME,
-            routing_key=routing_key,
+            queue=SESSION_QUEUE, exchange=PLANNING_EXCHANGE, routing_key=routing_key
         )
 
     channel.basic_qos(prefetch_count=1)
-    channel.basic_consume(queue=QUEUE_NAME, on_message_callback=on_message)
+    channel.basic_consume(queue=CALENDAR_QUEUE, on_message_callback=on_message)
+    channel.basic_consume(queue=SESSION_QUEUE, on_message_callback=on_message)
 
     logger.info(
-        "Consumer started | exchange=%s | queue=%s | routing_keys=%s | vhost=%s",
-        EXCHANGE_NAME, QUEUE_NAME, ROUTING_KEYS, RABBITMQ_VHOST,
+        "Consumer started | calendar_exchange=%s | planning_exchange=%s | vhost=%s",
+        CALENDAR_EXCHANGE,
+        PLANNING_EXCHANGE,
+        RABBITMQ_VHOST,
     )
     channel.start_consuming()
 
 
 def start_health_server(port: int = 30050):
+    """Start HTTP server with health check and token registration endpoint."""
+
     class Handler(BaseHTTPRequestHandler):
         def _send_json(self, status_code: int, payload: object):
             encoded = json.dumps(payload).encode("utf-8")
@@ -416,37 +556,78 @@ def start_health_server(port: int = 30050):
             self.wfile.write(encoded)
 
         def do_GET(self):
-            parsed = urlparse(self.path)
-            path = parsed.path.rstrip("/") or "/"
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"ok")
 
-            if path in ("/", "/health"):
-                self.send_response(200)
+        def do_POST(self):
+            if self.path == "/api/tokens":
+                self._handle_register_token()
+            else:
+                self.send_response(404)
                 self.end_headers()
-                self.wfile.write(b"ok")
-                return
 
-            if path == "/sessions":
-                self._send_json(200, list_sessions())
-                return
-
-            if path.startswith("/sessions/"):
-                session_id = path.split("/", 2)[2]
-                session = get_session(session_id)
-                if session is None:
-                    self._send_json(404, {"error": "session_not_found", "session_id": session_id})
+        def _handle_register_token(self):
+            """
+            POST /api/tokens
+            Body (JSON):
+              {
+                "user_id":       "usr_123",
+                "access_token":  "eyJ...",
+                "refresh_token": "0.A...",
+                "expires_in":    3600        // seconds until access_token expires
+              }
+            Requires header: Authorization: Bearer <API_TOKEN_SECRET>
+            """
+            if _API_TOKEN_SECRET:
+                auth = self.headers.get("Authorization", "")
+                if auth != f"Bearer {_API_TOKEN_SECRET}":
+                    self._json_response(401, {"error": "unauthorized"})
                     return
-                self._send_json(200, session)
-                return
 
-            self._send_json(404, {"error": "not_found", "path": path})
+            try:
+                length = int(self.headers.get("Content-Length", 0))
+                body = self.rfile.read(length)
+                data = json.loads(body)
+
+                user_id = data.get("user_id", "").strip()
+                access_token = data.get("access_token", "").strip()
+                refresh_token = data.get("refresh_token", "").strip()
+                expires_in = int(data.get("expires_in", 3600))
+
+                if not all([user_id, access_token, refresh_token]):
+                    self._json_response(400, {"error": "user_id, access_token and refresh_token are required"})
+                    return
+
+                expires_at = datetime.now(tz=timezone.utc).replace(microsecond=0)
+                from datetime import timedelta
+                expires_at = expires_at + timedelta(seconds=expires_in)
+
+                TokenService.store(user_id, access_token, refresh_token, expires_at)
+                logger.info("Token registered via /api/tokens | user_id=%s", user_id)
+                self._json_response(200, {"status": "ok", "user_id": user_id})
+
+            except (json.JSONDecodeError, ValueError) as exc:
+                self._json_response(400, {"error": str(exc)})
+            except Exception as exc:
+                logger.error("POST /api/tokens failed: %s", exc, exc_info=True)
+                self._json_response(500, {"error": "internal server error"})
+
+        def _json_response(self, status: int, payload: dict):
+            body = json.dumps(payload).encode()
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
 
         def log_message(self, format, *args):
-            pass  # keep HTTP server requests out of service logs
+            pass  # Silence access logs
 
     server = HTTPServer(("0.0.0.0", port), Handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
-    logger.info("Health endpoint started on port %d", port)
+    logger.info("HTTP server started on port %d (health + POST /api/tokens)", port)
 
 
 if __name__ == "__main__":

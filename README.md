@@ -1,257 +1,220 @@
 # Planning Service — Integration Project Group 1
+# Planning Service — Integration Project Group 1
 
 ![Python](https://img.shields.io/badge/Python-3.12-blue?logo=python)
 ![RabbitMQ](https://img.shields.io/badge/RabbitMQ-3.12-orange?logo=rabbitmq)
 ![Docker](https://img.shields.io/badge/Docker-Compose-blue?logo=docker)
 ![CI](https://github.com/IntegrationProject-Groep1/Planning/actions/workflows/ci.yml/badge.svg)
 
-The Planning service processes session requests from other teams via RabbitMQ, publishes session events back, and creates events in the users Outlook calendar via the **Microsoft Graph API**.
-
-> ⚠️ **This project is still under development.** Not all functionality has been implemented. This README may change as the project progresses.
+The Planning service receives session requests from other teams via RabbitMQ, publishes session events, manages a PostgreSQL session database, and synchronises Outlook calendar events via the **Microsoft Graph API**.
 
 ---
 
-## Central Dashboards
+## Documentation
 
-- **Log Viewer (Dozzle):** via the link: azureproject:(correct port)
-- **RabbitMQ Management:** via the link: azureproject:(correct port)
+| Document | Description |
+|---|---|
+| [docs/MESSAGE_CONTRACTS.md](docs/MESSAGE_CONTRACTS.md) | All XML message formats, routing keys, and token endpoint |
+| [docs/GRAPH_API.md](docs/GRAPH_API.md) | Microsoft Graph API setup, per-user token flow, and graph_sync table |
+| [docs/ERROR_HANDLING.md](docs/ERROR_HANDLING.md) | Error catalogue, retry strategy, observability queries |
+| [docs/IMPLEMENTATION_SUMMARY.md](docs/IMPLEMENTATION_SUMMARY.md) | Full implementation overview with file structure |
 
 ---
 
-## Overview
+## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                      Planning Service                           │
-│                                                                 │
-│  consumer.py                      producer.py                   │
-│  Listens on:                      Publishes on:                 │
-│  exchange: calendar.exchange      exchange: planning.exchange   │
-│  queue:    planning.calendar      routing:  planning.session    │
-│            .invite                          .created            │
-│  routing:  calendar.invite                                      │
-│                                                                 │
-│  health endpoint: :30050 (for sidecar heartbeat)                │
-│                                                                 │
-│  [TODO] Microsoft Graph API (OAuth)                             │
-│  User logs in → access token → event in Outlook calendar        │
-└─────────────────────────────────────────────────────────────────┘
-                          │
-                          ▼
-         RabbitMQ Broker — port 30000
+┌──────────────────────────────────────────────────────────────────┐
+│                        Planning Service                          │
+│                                                                  │
+│  consumer.py                       producer.py                   │
+│  Listens on:                       Publishes to:                 │
+│  calendar.exchange                 planning.exchange             │
+│    └─ calendar.invite                └─ planning.calendar        │
+│  planning.exchange                        .invite.confirmed      │
+│    └─ planning.session.#             └─ planning.session.created │
+│                                      └─ planning.session.updated │
+│                                      └─ planning.session.deleted │
+│                                      └─ planning.session         │
+│                                           .view_response         │
+│                                                                  │
+│  xml_handlers.py  ←→  xsd_validator.py  ←→  schemas/*.xsd       │
+│  xml_models.py                                                   │
+│                                                                  │
+│  calendar_service.py  ←→  PostgreSQL                            │
+│  token_service.py     ←→  PostgreSQL (user_tokens)              │
+│  graph_service.py     ←→  Microsoft Graph API (Outlook)         │
+│                                                                  │
+│  REST endpoint: :30050/api/tokens   (token registration)        │
+│  Health endpoint: :30050            (GET → 200 ok)              │
+└──────────────────────────────────────────────────────────────────┘
+                           │
+                           ▼
+          RabbitMQ Broker — port 30000
 ```
 
 ---
 
 ## Project Structure
+## Project Structure
 
 ```
 Planning/
-├── consumer.py          # Receives calendar.invite messages from other teams
-├── producer.py          # Publishes session_created messages to other teams
+│
+├── consumer.py               # RabbitMQ consumer — 5 message handlers + REST token endpoint
+├── producer.py               # RabbitMQ publisher — XSD validation + retry
+├── xml_models.py             # Dataclasses for all 6 message types
+├── xml_handlers.py           # XML parsing and building
+├── xsd_validator.py          # XSD validation against schemas/
+├── calendar_service.py       # PostgreSQL service layer (5 classes)
+├── graph_client.py           # Microsoft Graph API HTTP client (MSAL)
+├── graph_service.py          # Graph + DB sync orchestration
+├── token_service.py          # Per-user OAuth token storage + auto-refresh
+├── dashboard.py              # Sync status dashboard (http://localhost:8088)
+│
+├── schemas/                  # XSD schema files (one per message type)
+│   ├── calendar_invite.xsd            # incoming: enrollment from Frontend
+│   ├── calendar_invite_confirmed.xsd  # outgoing: enrollment confirmation to Frontend
+│   ├── session_created.xsd
+│   ├── session_updated.xsd
+│   ├── session_deleted.xsd
+│   ├── session_view_request.xsd
+│   └── session_view_response.xsd
+│
+├── migrations/               # PostgreSQL migrations — run in order
+│   ├── 001_initial.sql       # Initial schema
+│   ├── 002_planning_schema.sql  # Sessions, message_log, audit tables
+│   ├── 003_graph_sync.sql    # graph_sync table (session ↔ Outlook event)
+│   └── 004_user_tokens.sql   # user_tokens table (per-user encrypted OAuth tokens)
+│
 ├── tests/
-│   ├── test_consumer.py # Tests for the consumer
-│   └── test_producer.py # Tests for the producer
-├── .env                 # Production credentials (not in git ⚠️)
-├── .env.local           # Local credentials (not in git ⚠️)
-├── .env.example         # Template — fill in with your own credentials
-├── docker-compose.yml   # Services orchestration
-├── Dockerfile           # Docker image definition
-└── requirements.txt     # Python dependencies
+│   ├── conftest.py           # Shared fixtures
+│   ├── test_xml_handlers.py  # XML parsing and building (25+ tests)
+│   ├── test_xsd_validator.py # XSD validation (20+ tests)
+│   ├── test_producer.py      # Publisher + XSD gate + retry (15+ tests)
+│   ├── test_consumer.py      # Consumer handlers (10+ tests)
+│   ├── test_database.py      # DB service CRUD (30+ tests)
+│   ├── test_graph_client.py  # Graph API HTTP client (14 tests)
+│   └── test_graph_service.py # Graph sync orchestration (13 tests)
+│
+├── docs/
+│   ├── MESSAGE_CONTRACTS.md      # XML examples, routing keys, token endpoint
+│   ├── GRAPH_API.md              # Graph API setup and per-user token flow
+│   ├── ERROR_HANDLING.md         # Error catalogue and recovery
+│   └── IMPLEMENTATION_SUMMARY.md # Full implementation overview
+│
+├── scripts/                  # One-time / utility scripts (not part of the service)
+│   ├── auth_setup.py         # One-time OAuth login to persist shared MSAL token cache
+│   ├── test_send.py          # Manual test: sends a calendar.invite to RabbitMQ
+│   └── frontend_demo.py      # Local demo of the frontend (http://localhost:8089)
+│
+├── .env.example              # Environment variable template — copy to .env
+├── docker-compose.yml
+├── Dockerfile
+└── requirements.txt
 ```
 
 ---
 
 ## Quick Start
+## Quick Start
 
+### Requirements
 ### Requirements
 
 - Docker Desktop
 - Python 3.12+
 
-### 1. Set Credentials
+### 1. Set credentials
 
 ```bash
 cp .env.example .env
 ```
 
-Fill in `.env` with the production credentials (obtained from Tom/infra).
-See [Environment variables](#environment-variables) for an overview of all variables.
-
-For local development, create `.env.local` based on `.env.example` with `RABBITMQ_HOST=localhost` and `RABBITMQ_PORT=5672`.
+Fill in `.env`:
+- RabbitMQ and PostgreSQL credentials
+- Azure credentials for Graph API (optional — sync is disabled gracefully if absent)
+- Generate `TOKEN_ENCRYPTION_KEY`:
+  ```bash
+  python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+  ```
+- Generate `API_TOKEN_SECRET`:
+  ```bash
+  python -c "import secrets; print(secrets.token_hex(32))"
+  ```
 
 ### 2. Start
 
-**Production** (connection with remote broker):
 ```powershell
+# Production (connects to remote broker)
 docker compose up -d
-```
 
-**Local** (own RabbitMQ container):
-```powershell
+# Local (spins up its own RabbitMQ)
 $env:ENV_FILE=".env.local"; docker compose --profile local up -d
 ```
 
-### 3. View Logs
+### 3. Run migrations
 
-```powershell
-# Planning service
-docker compose logs -f planning-service
+```bash
+psql postgresql://user:pass@localhost:5433/planning_db < migrations/002_planning_schema.sql
+psql postgresql://user:pass@localhost:5433/planning_db < migrations/003_graph_sync.sql
+psql postgresql://user:pass@localhost:5433/planning_db < migrations/004_user_tokens.sql
 ```
 
-### 4. Stop
+### 4. Logs
 
 ```powershell
-docker compose down
+docker compose logs -f planning-service
 ```
 
 ---
 
 ## Local Development (without Docker)
 
-### Virtual environment
-
 ```powershell
 python -m venv .venv
-.venv\Scripts\activate
-pip install -r requirements.txt
+.venv\Scripts\pip install -r requirements.txt
 ```
 
-### Start Consumer
-
+Start consumer + REST endpoint:
 ```powershell
-python consumer.py
+.venv\Scripts\python consumer.py
 ```
 
-Expected output:
-```
-INFO:__main__:Health endpoint started on port 30050
-INFO:__main__:Consumer started | exchange=calendar.exchange | queue=planning.calendar.invite | routing_key=calendar.invite | vhost=/
-```
-
-### Test Producer
-
+Test publisher:
 ```powershell
-python producer.py
+.venv\Scripts\python producer.py created
+.venv\Scripts\python producer.py updated
+.venv\Scripts\python producer.py deleted
 ```
 
-Expected output:
-```
-INFO:__main__:Message sent with routing key 'planning.session.created'
-INFO:__main__:✓ Message successfully sent to RabbitMQ
-```
-
-### End-to-end test
-
-Start the consumer in terminal 1, send a test message in terminal 2:
-
+Send a manual test message:
 ```powershell
-# Terminal 2
-python test_send.py
-```
-
-Expected output in terminal 1:
-```
-INFO:__main__:calendar.invite received | message_id=... | session_id=sess-test-001 | title=Test session | ...
+.venv\Scripts\python scripts/test_send.py
 ```
 
 ---
 
-## XML Message Format
+## Tests
 
-All XML field names are **snake_case**, enum values are **lowercase**. This is mandatory per project standard (v3).
+```powershell
+# All tests
+.venv\Scripts\pytest tests/ -v
 
-### session_created — Routing key: `planning.session.created`
+# By area
+.venv\Scripts\pytest tests/test_xsd_validator.py -v
+.venv\Scripts\pytest tests/test_producer.py -v
+.venv\Scripts\pytest tests/test_xml_handlers.py -v
+.venv\Scripts\pytest tests/test_graph_client.py -v
+.venv\Scripts\pytest tests/test_graph_service.py -v
+.venv\Scripts\pytest tests/test_consumer.py -v
+.venv\Scripts\pytest tests/test_database.py -v
 
-```xml
-<message xmlns="urn:integration:planning:v1">
-  <header>
-    <message_id>550e8400-e29b-41d4-a716-446655440000</message_id>
-    <timestamp>2026-05-15T09:00:00Z</timestamp>
-    <source>planning</source>
-    <type>session_created</type>
-    <version>1.0</version>
-    <correlation_id>corr-uuid-here</correlation_id>
-  </header>
-  <body>
-    <session_id>sess-uuid-001</session_id>
-    <title>Keynote: AI in Healthcare</title>
-    <start_datetime>2026-05-15T14:00:00Z</start_datetime>
-    <end_datetime>2026-05-15T15:00:00Z</end_datetime>
-    <location>Aula A - Campus Jette</location>
-    <session_type>keynote</session_type>
-    <status>published</status>
-    <max_attendees>120</max_attendees>
-    <current_attendees>0</current_attendees>
-  </body>
-</message>
+# With coverage
+.venv\Scripts\pytest tests/ --cov=. --cov-report=html
 ```
 
-### session_updated — Routing key: `planning.session.updated`
-
-```xml
-<message xmlns="urn:integration:planning:v1">
-  <header>
-    <message_id>550e8400-e29b-41d4-a716-446655440000</message_id>
-    <timestamp>2026-05-15T09:30:00Z</timestamp>
-    <source>planning</source>
-    <type>session_updated</type>
-    <version>1.0</version>
-    <correlation_id>corr-uuid-here</correlation_id>
-  </header>
-  <body>
-    <session_id>sess-uuid-001</session_id>
-    <title>Keynote: AI in Healthcare (Updated)</title>
-    <start_datetime>2026-05-15T14:30:00Z</start_datetime>
-    <end_datetime>2026-05-15T15:30:00Z</end_datetime>
-    <location>Aula A - Campus Jette</location>
-    <session_type>keynote</session_type>
-    <status>published</status>
-    <max_attendees>150</max_attendees>
-    <current_attendees>25</current_attendees>
-  </body>
-</message>
-```
-
-### session_deleted — Routing key: `planning.session.deleted`
-
-```xml
-<message xmlns="urn:integration:planning:v1">
-  <header>
-    <message_id>550e8400-e29b-41d4-a716-446655440000</message_id>
-    <timestamp>2026-05-15T10:00:00Z</timestamp>
-    <source>planning</source>
-    <type>session_deleted</type>
-    <version>1.0</version>
-    <correlation_id>corr-uuid-here</correlation_id>
-  </header>
-  <body>
-    <session_id>sess-uuid-001</session_id>
-    <reason>cancelled</reason>
-    <deleted_by>planning-admin</deleted_by>
-  </body>
-</message>
-```
-
-### calendar.invite — Routing key: `calendar.invite` *(incoming)*
-
-```xml
-<message xmlns="urn:integration:planning:v1">
-  <header>
-    <message_id>msg-uuid</message_id>
-    <timestamp>2026-05-15T09:00:00Z</timestamp>
-    <source>frontend</source>
-    <type>calendar.invite</type>
-  </header>
-  <body>
-    <session_id>sess-uuid-001</session_id>
-    <title>Keynote: AI in Healthcare</title>
-    <start_datetime>2026-05-15T14:00:00Z</start_datetime>
-    <end_datetime>2026-05-15T15:00:00Z</end_datetime>
-    <location>online</location>
-  </body>
-</message>
-```
+Total: **125+ tests** across 7 test files.
 
 ### XSD schemas used by the service
 
@@ -270,15 +233,16 @@ Validation behavior:
 ---
 
 ## RabbitMQ Configuration
+## RabbitMQ Configuration
 
 | | Consumer | Producer |
 |---|---|---|
-| **Exchange** | `calendar.exchange` | `planning.exchange` |
-| **Queue** | `planning.calendar.invite` | — |
-| **Routing key(s)** | `calendar.invite`, `planning.session.created`, `planning.session.updated`, `planning.session.deleted`, `planning.session.view.request` | `planning.session.created`, `planning.session.updated`, `planning.session.deleted`, `planning.session.view.request`, `planning.session.view.response` |
-| **Type** | topic | topic |
+| **Exchanges** | `calendar.exchange`, `planning.exchange` | `planning.exchange` |
+| **Queues** | `planning.calendar.invite`, `planning.session.events` | — |
+| **Routing keys (in)** | `calendar.invite`, `planning.session.#` | — |
+| **Routing keys (out)** | — | `planning.calendar.invite.confirmed`, `planning.session.created`, `planning.session.updated`, `planning.session.deleted`, `planning.session.view_response` |
 
-**Broker:**
+Exchange names are configurable via env vars `CALENDAR_EXCHANGE` and `PLANNING_EXCHANGE`.
 
 | Environment | Host | Port |
 |---|---|---|
@@ -286,93 +250,69 @@ Validation behavior:
 | Production (UI) | see `.env` | `30001` |
 | Local (AMQP) | `localhost` | `5672` |
 | Local (UI) | `localhost` | `15672` |
+| Production (AMQP) | see `.env` | `30000` |
+| Production (UI) | see `.env` | `30001` |
+| Local (AMQP) | `localhost` | `5672` |
+| Local (UI) | `localhost` | `15672` |
 
 ---
 
-## Heartbeat Sidecar
+## REST Endpoint — Token Registration
 
-The heartbeat is handled by Team Infra's shared sidecar image. It checks every second whether `planning-service:30050` is reachable and sends a heartbeat to RabbitMQ.
+Drupal calls this once per user after OAuth login:
 
-The planning service exposes a minimal health endpoint on port **30050** that returns `ok`.
-
-View status via the RabbitMQ UI → Exchange `heartbeat`, or in Kibana (Team Controlroom).
-
----
-
-## Microsoft Graph API *(coming soon)*
-
-The planning service will integrate with the **Microsoft Graph API** to create events directly in the user's Outlook calendar.
-
-**Requirements:**
-- Azure App Registration (`client_id`, `client_secret`, `tenant_id`) — obtainable from the professor
-- OAuth 2.0 — user must log in with Microsoft account
-- Permission: `Calendars.ReadWrite`
-
-**Flow:**
 ```
-[User logs in via Microsoft OAuth]
-        ↓
-[Planning service receives access token]
-        ↓
-[Graph API: POST /me/events]
-        ↓
-[Event appears in user's Outlook calendar]
+POST http://<host>:30050/api/tokens
+Authorization: Bearer <API_TOKEN_SECRET>
+Content-Type: application/json
+
+{ "user_id": "usr_123", "access_token": "eyJ...", "refresh_token": "0.A...", "expires_in": 3600 }
 ```
 
-> ⚠️ **Not yet implemented.** Waiting for Azure App Registration credentials from the professor.
+See [docs/MESSAGE_CONTRACTS.md](docs/MESSAGE_CONTRACTS.md#token-registration-post-apitokens) for the full spec.
 
 ---
 
 ## Environment Variables
+## Environment Variables
 
 | Variable | Required | Description |
+| Variable | Required | Description |
 |---|---|---|
-| `RABBITMQ_HOST` | yes | Hostname of the broker |
+| `RABBITMQ_HOST` | yes | Broker hostname |
 | `RABBITMQ_PORT` | yes | AMQP port (`30000` prod / `5672` local) |
-| `RABBITMQ_USER` | yes | Username (obtained from infra) |
-| `RABBITMQ_PASS` | yes | Password (obtained from infra) |
+| `RABBITMQ_USER` | yes | Username |
+| `RABBITMQ_PASS` | yes | Password |
 | `RABBITMQ_VHOST` | yes | Virtual host (default: `/`) |
+| `CALENDAR_EXCHANGE` | no | Incoming exchange name (default: `calendar.exchange`) |
+| `PLANNING_EXCHANGE` | no | Outgoing exchange name (default: `planning.exchange`) |
+| `POSTGRES_DB` | yes | Database name |
+| `POSTGRES_USER` | yes | Database user |
+| `POSTGRES_PASSWORD` | yes | Database password |
+| `AZURE_CLIENT_ID` | no | App registration client ID (Graph API) |
+| `AZURE_CLIENT_SECRET` | no | App registration client secret (Graph API) |
+| `TOKEN_CACHE_FILE` | no | MSAL shared token cache path (default: `token_cache.json`) |
+| `TOKEN_ENCRYPTION_KEY` | yes | Fernet key for encrypting stored OAuth tokens |
+| `API_TOKEN_SECRET` | yes | Shared secret for `POST /api/tokens` (Drupal → Planning) |
 
-> Use `.env.example` as a basis. **Never** commit `.env` or `.env.local` to git.
-
----
-
-## Tests
-
-```powershell
-# Install pytest (once)
-.venv\Scripts\pip install pytest
-
-# Run all tests
-.venv\Scripts\pytest tests/ -v
-```
-
-Tests cover:
-- XML generation and field validation (producer)
-- XML parsing, missing fields, and error handling (consumer)
-- RabbitMQ ack/nack behavior (consumer)
-- Connection errors and missing credentials (producer)
+> Never commit `.env` or `.env.local` to git.  
+> Graph API variables are optional — if absent, Outlook sync is disabled gracefully.  
+> `TOKEN_ENCRYPTION_KEY` must never change once tokens are stored — changing it invalidates all stored tokens.
 
 ---
 
-## For Other Teams — Sending Messages to Planning
+## Dashboards
 
-To send a `calendar.invite` to the planning service:
-
-```python
-channel.exchange_declare(exchange="calendar.exchange", exchange_type="topic", durable=True)
-channel.basic_publish(
-    exchange="calendar.exchange",
-    routing_key="calendar.invite",
-    body=xml.encode("utf-8"),
-    properties=pika.BasicProperties(content_type="application/xml", delivery_mode=2)
-)
-```
-
-Required fields in `<body>`: `session_id`, `title`, `start_datetime`, `end_datetime`.
+| Tool | URL |
+|---|---|
+| RabbitMQ UI (local) | http://localhost:15672 |
+| pgAdmin (local) | http://localhost:5050 |
+| Health check | http://localhost:30050 |
+| **Sync Dashboard** | **http://localhost:8088** |
+| **Frontend Demo** | **http://localhost:8089** (run `python scripts/frontend_demo.py`) |
 
 ---
 
-## Team Planning
+## Team
 
-Desiderius University of Applied Sciences — Integration Project Group Planning
+Desideriushogeschool — Integration Project Group 1 — Planning Team

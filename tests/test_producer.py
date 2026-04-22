@@ -1,201 +1,328 @@
-import pytest
-from unittest.mock import MagicMock, patch
-from lxml import etree
+"""
+Tests for producer.py - message publishing to RabbitMQ.
+"""
 
+import pytest
+from unittest.mock import patch, MagicMock, call
 from producer import (
-    create_session_xml,
-    create_session_updated_xml,
-    create_session_deleted_xml,
-    validate_xml,
-    send_message,
+    publish_session_created,
+    publish_session_updated,
+    publish_session_deleted,
+    publish_session_view_response,
+    _publish_with_validation_and_retry,
 )
 
-NS = "urn:integration:planning:v1"
 
+class TestPublishSessionCreated:
+    """Tests for publish_session_created."""
 
-def _parse(xml: str) -> etree._Element:
-    """Parse XML and strip namespace so find('header') works."""
-    root = etree.fromstring(xml.encode())
-    for elem in root.iter():
-        elem.tag = etree.QName(elem.tag).localname
-    return root
+    @patch("producer._publish_message")
+    def test_publish_session_created_success(self, mock_publish):
+        """Publishing session_created should succeed."""
+        mock_publish.return_value = True
 
-
-class TestCreateSessionXml:
-    def test_returns_valid_xml(self):
-        xml = create_session_xml(
+        result = publish_session_created(
             session_id="sess-001",
-            title="Test sessie",
+            title="Test Session",
             start_datetime="2026-05-15T14:00:00Z",
             end_datetime="2026-05-15T15:00:00Z",
-            location="online",
+            location="Room A",
         )
-        root = _parse(xml)
-        assert root.tag == "message"
 
-    def test_required_header_fields(self):
-        xml = create_session_xml(
+        assert result is True
+        assert mock_publish.called
+        assert "planning.session.created" in str(mock_publish.call_args)
+
+    @patch("producer.time.sleep")
+    @patch("producer._publish_message")
+    def test_publish_session_created_failure(self, mock_publish, mock_sleep):
+        """Publishing session_created should return False after all retries fail."""
+        mock_publish.return_value = False
+
+        result = publish_session_created(
+            session_id="sess-001",
+            title="Test Session",
+            start_datetime="2026-05-15T14:00:00Z",
+            end_datetime="2026-05-15T15:00:00Z",
+            location="Room A",
+        )
+
+        assert result is False
+        # Default max_retries=3 means _publish_message is called 3 times
+        assert mock_publish.call_count == 3
+
+    @patch("producer._publish_message")
+    def test_publish_session_created_with_correlation_id(self, mock_publish):
+        """Publishing with correlation_id should pass it through."""
+        mock_publish.return_value = True
+
+        publish_session_created(
             session_id="sess-001",
             title="Test",
             start_datetime="2026-05-15T14:00:00Z",
             end_datetime="2026-05-15T15:00:00Z",
-            location="online",
+            location="Room A",
+            correlation_id="corr-123",
         )
-        root = _parse(xml)
-        header = root.find("header")
-        assert header is not None
-        for field in ("message_id", "timestamp", "source", "type", "version", "correlation_id"):
-            assert header.find(field) is not None, f"Missing header field: {field}"
 
-    def test_required_body_fields(self):
-        xml = create_session_xml(
+        # Verify the XML contains correlation_id
+        call_args = mock_publish.call_args[0][0]  # First positional arg is XML
+        assert "corr-123" in call_args
+
+
+class TestPublishSessionUpdated:
+    """Tests for publish_session_updated."""
+
+    @patch("producer._publish_message")
+    def test_publish_session_updated_success(self, mock_publish):
+        """Publishing session_updated should succeed."""
+        mock_publish.return_value = True
+
+        result = publish_session_updated(
             session_id="sess-001",
-            title="Test",
-            start_datetime="2026-05-15T14:00:00Z",
-            end_datetime="2026-05-15T15:00:00Z",
-            location="online",
-        )
-        root = _parse(xml)
-        body = root.find("body")
-        assert body is not None
-        for field in ("session_id", "title", "start_datetime", "end_datetime", "location", "session_type", "status", "max_attendees", "current_attendees"):
-            assert body.find(field) is not None, f"Missing body field: {field}"
-
-    def test_field_values(self):
-        xml = create_session_xml(
-            session_id="sess-001",
-            title="Keynote",
-            start_datetime="2026-05-15T14:00:00Z",
-            end_datetime="2026-05-15T15:00:00Z",
-            location="online",
-            max_attendees=50,
-        )
-        root = _parse(xml)
-        body = root.find("body")
-        assert body.findtext("session_id") == "sess-001"
-        assert body.findtext("title") == "Keynote"
-        assert body.findtext("max_attendees") == "50"
-
-    def test_source_is_planning(self):
-        xml = create_session_xml(
-            session_id="x", title="x",
-            start_datetime="2026-01-01T00:00:00Z",
-            end_datetime="2026-01-01T01:00:00Z",
-            location="x",
-        )
-        root = _parse(xml)
-        assert root.find("header").findtext("source") == "planning"
-
-    def test_snake_case_field_names(self):
-        xml = create_session_xml(
-            session_id="x", title="x",
-            start_datetime="2026-01-01T00:00:00Z",
-            end_datetime="2026-01-01T01:00:00Z",
-            location="x",
-        )
-        root = _parse(xml)
-        for elem in root.iter():
-            assert elem.tag == elem.tag.lower() or "_" in elem.tag or elem.tag == "message", \
-                f"camelCase tag found: {elem.tag}"
-
-
-class TestCreateSessionUpdatedXml:
-    def test_updated_type_and_required_fields(self):
-        xml = create_session_updated_xml(
-            session_id="sess-001",
-            title="Updated title",
-            start_datetime="2026-05-15T16:00:00Z",
-            end_datetime="2026-05-15T17:00:00Z",
-            location="hybrid",
+            title="Updated Title",
+            start_datetime="2026-05-15T14:30:00Z",
+            end_datetime="2026-05-15T15:30:00Z",
+            location="Room B",
+            current_attendees=25,
         )
 
-        root = _parse(xml)
-        assert root.find("header").findtext("type") == "session_updated"
-        body = root.find("body")
-        for field in ("session_id", "title", "start_datetime", "end_datetime", "location"):
-            assert body.find(field) is not None
+        assert result is True
+        assert mock_publish.called
+        assert "planning.session.updated" in str(mock_publish.call_args)
 
 
-class TestCreateSessionDeletedXml:
-    def test_deleted_type_and_required_fields(self):
-        xml = create_session_deleted_xml(
+class TestPublishSessionDeleted:
+    """Tests for publish_session_deleted."""
+
+    @patch("producer._publish_message")
+    def test_publish_session_deleted_success(self, mock_publish):
+        """Publishing session_deleted should succeed."""
+        mock_publish.return_value = True
+
+        result = publish_session_deleted(
             session_id="sess-001",
             reason="cancelled",
-            deleted_by="planning-admin",
+            deleted_by="admin",
         )
 
-        root = _parse(xml)
-        assert root.find("header").findtext("type") == "session_deleted"
-        body = root.find("body")
-        assert body.findtext("session_id") == "sess-001"
-        assert body.findtext("reason") == "cancelled"
-        assert body.findtext("deleted_by") == "planning-admin"
+        assert result is True
+        assert mock_publish.called
+        assert "planning.session.deleted" in str(mock_publish.call_args)
 
+    @patch("producer._publish_message")
+    def test_publish_session_deleted_includes_reason(self, mock_publish):
+        """Published message should include deletion reason."""
+        mock_publish.return_value = True
 
-class TestValidateXml:
-    def test_valid_xml_returns_true(self):
-        assert validate_xml("<root><child/></root>") is True
-
-    def test_malformed_xml_returns_false(self):
-        assert validate_xml("<root><unclosed>") is False
-
-    def test_empty_string_returns_false(self):
-        assert validate_xml("") is False
-
-
-class TestSendMessage:
-    def _make_valid_xml(self):
-        return create_session_xml(
+        publish_session_deleted(
             session_id="sess-001",
-            title="Test",
-            start_datetime="2026-05-15T14:00:00Z",
-            end_datetime="2026-05-15T15:00:00Z",
-            location="online",
+            reason="cancelled",
+            deleted_by="admin",
         )
 
-    @patch("producer.pika.BlockingConnection")
-    @patch("producer.RABBITMQ_USER", "user")
-    @patch("producer.RABBITMQ_PASS", "pass")
-    def test_send_valid_message_returns_true(self, mock_conn_cls):
-        mock_channel = MagicMock()
-        mock_conn_cls.return_value.channel.return_value = mock_channel
+        call_args = mock_publish.call_args[0][0]
+        assert "cancelled" in call_args
+        assert "admin" in call_args
 
-        result = send_message(self._make_valid_xml())
+
+class TestPublishSessionViewResponse:
+    """Tests for publish_session_view_response."""
+
+    @patch("producer._publish_message")
+    def test_publish_session_view_response_success(self, mock_publish):
+        """Publishing session_view_response should succeed."""
+        mock_publish.return_value = True
+
+        result = publish_session_view_response(
+            request_message_id="req-001",
+            requested_session_id="sess-001",
+            status="ok",
+            sessions=[
+                {
+                    "session_id": "sess-001",
+                    "title": "Test",
+                    "start_datetime": "2026-05-15T14:00:00Z",
+                    "end_datetime": "2026-05-15T15:00:00Z",
+                }
+            ],
+        )
 
         assert result is True
-        mock_channel.basic_publish.assert_called_once()
+        assert mock_publish.called
+        assert "planning.session.view_response" in str(mock_publish.call_args)
 
-    @patch("producer.pika.BlockingConnection")
-    @patch("producer.RABBITMQ_USER", "user")
-    @patch("producer.RABBITMQ_PASS", "pass")
-    def test_send_uses_custom_routing_key(self, mock_conn_cls):
-        mock_channel = MagicMock()
-        mock_conn_cls.return_value.channel.return_value = mock_channel
+    @patch("producer._publish_message")
+    def test_publish_session_view_response_not_found(self, mock_publish):
+        """Publishing response with not_found status should work."""
+        mock_publish.return_value = True
 
-        result = send_message(self._make_valid_xml(), routing_key="planning.session.updated")
+        result = publish_session_view_response(
+            request_message_id="req-001",
+            requested_session_id="sess-notfound",
+            status="not_found",
+            sessions=[],
+        )
 
         assert result is True
-        assert mock_channel.basic_publish.call_args.kwargs["routing_key"] == "planning.session.updated"
+        call_args = mock_publish.call_args[0][0]
+        assert "not_found" in call_args
 
-    @patch("producer.pika.BlockingConnection")
-    @patch("producer.RABBITMQ_USER", "user")
-    @patch("producer.RABBITMQ_PASS", "pass")
-    def test_send_invalid_xml_returns_false(self, mock_conn_cls):
-        mock_conn_cls.return_value.channel.return_value = MagicMock()
+    @patch("producer._publish_message")
+    def test_publish_session_view_response_multiple_sessions(self, mock_publish):
+        """Publishing response with multiple sessions should work."""
+        mock_publish.return_value = True
 
-        result = send_message("<broken>")
+        sessions = [
+            {
+                "session_id": "sess-001",
+                "title": "Session 1",
+                "start_datetime": "2026-05-15T14:00:00Z",
+                "end_datetime": "2026-05-15T15:00:00Z",
+            },
+            {
+                "session_id": "sess-002",
+                "title": "Session 2",
+                "start_datetime": "2026-05-15T15:00:00Z",
+                "end_datetime": "2026-05-15T16:00:00Z",
+            },
+        ]
+
+        publish_session_view_response(
+            request_message_id="req-001",
+            requested_session_id=None,
+            status="ok",
+            sessions=sessions,
+        )
+
+        call_args = mock_publish.call_args[0][0]
+        assert "<session_count>2</session_count>" in call_args
+        assert "sess-001" in call_args
+        assert "sess-002" in call_args
+
+
+# ============================================================================
+# Tests for XSD validation gate in _publish_with_validation_and_retry
+# ============================================================================
+
+VALID_SESSION_CREATED_XML = b"""<message xmlns="urn:integration:planning:v1">
+  <header>
+    <message_id>m1</message_id>
+    <timestamp>2026-05-15T09:00:00Z</timestamp>
+    <source>planning</source>
+    <type>session_created</type>
+  </header>
+  <body>
+    <session_id>sess-001</session_id>
+    <title>Test</title>
+    <start_datetime>2026-05-15T14:00:00Z</start_datetime>
+    <end_datetime>2026-05-15T15:00:00Z</end_datetime>
+  </body>
+</message>"""
+
+INVALID_SESSION_CREATED_XML = b"""<message xmlns="urn:integration:planning:v1">
+  <header>
+    <message_id>m1</message_id>
+    <timestamp>2026-05-15T09:00:00Z</timestamp>
+    <source>planning</source>
+    <type>session_created</type>
+  </header>
+  <body>
+    <title>Missing required session_id</title>
+    <start_datetime>2026-05-15T14:00:00Z</start_datetime>
+    <end_datetime>2026-05-15T15:00:00Z</end_datetime>
+  </body>
+</message>"""
+
+
+class TestPublishWithValidationAndRetry:
+    """Tests for _publish_with_validation_and_retry."""
+
+    @patch("producer._publish_message")
+    def test_valid_xml_is_published(self, mock_publish):
+        """Valid XML passes XSD gate and reaches RabbitMQ."""
+        mock_publish.return_value = True
+
+        result = _publish_with_validation_and_retry(
+            VALID_SESSION_CREATED_XML.decode(),
+            "planning.session.created",
+            "session_created",
+        )
+
+        assert result is True
+        assert mock_publish.call_count == 1
+
+    @patch("producer._publish_message")
+    def test_invalid_xml_is_blocked(self, mock_publish):
+        """Invalid XML is blocked at the XSD gate — never reaches RabbitMQ."""
+        result = _publish_with_validation_and_retry(
+            INVALID_SESSION_CREATED_XML.decode(),
+            "planning.session.created",
+            "session_created",
+        )
 
         assert result is False
+        mock_publish.assert_not_called()
 
-    @patch("producer.pika.BlockingConnection", side_effect=Exception("connection_error"))
-    @patch("producer.RABBITMQ_USER", "user")
-    @patch("producer.RABBITMQ_PASS", "pass")
-    def test_connection_error_returns_false(self, _):
-        result = send_message(self._make_valid_xml())
-        assert result is False
+    @patch("producer.time.sleep")
+    @patch("producer._publish_message")
+    def test_retries_on_publish_failure(self, mock_publish, mock_sleep):
+        """Failed publish is retried up to max_retries times."""
+        mock_publish.return_value = False
 
-    @patch("producer.RABBITMQ_USER", None)
-    @patch("producer.RABBITMQ_PASS", None)
-    def test_missing_credentials_returns_false(self):
-        result = send_message(self._make_valid_xml())
+        result = _publish_with_validation_and_retry(
+            VALID_SESSION_CREATED_XML.decode(),
+            "planning.session.created",
+            "session_created",
+            max_retries=3,
+        )
+
         assert result is False
+        assert mock_publish.call_count == 3
+
+    @patch("producer.time.sleep")
+    @patch("producer._publish_message")
+    def test_succeeds_on_second_attempt(self, mock_publish, mock_sleep):
+        """Publish succeeds on the second attempt after one failure."""
+        mock_publish.side_effect = [False, True]
+
+        result = _publish_with_validation_and_retry(
+            VALID_SESSION_CREATED_XML.decode(),
+            "planning.session.created",
+            "session_created",
+            max_retries=3,
+        )
+
+        assert result is True
+        assert mock_publish.call_count == 2
+
+    @patch("producer.time.sleep")
+    @patch("producer._publish_message")
+    def test_exponential_backoff_delays(self, mock_publish, mock_sleep):
+        """Sleep durations follow exponential backoff: 1s, 2s."""
+        mock_publish.return_value = False
+
+        _publish_with_validation_and_retry(
+            VALID_SESSION_CREATED_XML.decode(),
+            "planning.session.created",
+            "session_created",
+            max_retries=3,
+            initial_delay=1.0,
+        )
+
+        # 2 sleeps between 3 attempts: 1.0s then 2.0s
+        assert mock_sleep.call_count == 2
+        mock_sleep.assert_any_call(1.0)
+        mock_sleep.assert_any_call(2.0)
+
+    @patch("producer._publish_message")
+    def test_unknown_message_type_blocked(self, mock_publish):
+        """Unknown message type cannot pass XSD gate."""
+        result = _publish_with_validation_and_retry(
+            b"<x/>",
+            "planning.some.queue",
+            "totally_unknown",
+        )
+
+        assert result is False
+        mock_publish.assert_not_called()
