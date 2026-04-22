@@ -3,7 +3,7 @@
         "1": {
             "Name": "planning",
             "Group": "Servers",
-            "Host": "db",
+            "Host": "db-planning",
             "Port": 5432,
             "MaintenanceDB": "planning",
             "Username": "planning_user",
