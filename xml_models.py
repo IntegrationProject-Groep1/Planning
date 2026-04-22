@@ -35,6 +35,7 @@ class CalendarInviteBody:
     start_datetime: str
     end_datetime: str
     location: Optional[str] = None
+    user_id: Optional[str] = None
 
 
 @dataclass

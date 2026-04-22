@@ -4,10 +4,12 @@ Listens on RabbitMQ for incoming messages and routes them to appropriate handler
 Supports: calendar.invite, session_created, session_updated, session_deleted, session_view_request
 """
 
+import json
 import pika
 import os
 import logging
 import threading
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from dotenv import load_dotenv
 
@@ -29,6 +31,7 @@ from calendar_service import (
     SessionViewRequestService,
 )
 from graph_service import GraphService
+from token_service import TokenService
 from producer import publish_calendar_invite_confirmed
 
 logging.basicConfig(level=logging.INFO)
@@ -39,6 +42,9 @@ RABBITMQ_PORT = int(os.getenv("RABBITMQ_PORT", "5672"))
 RABBITMQ_USER = os.getenv("RABBITMQ_USER")
 RABBITMQ_PASS = os.getenv("RABBITMQ_PASS")
 RABBITMQ_VHOST = os.getenv("RABBITMQ_VHOST", "/")
+
+# Shared secret Drupal must send as "Authorization: Bearer <value>"
+_API_TOKEN_SECRET = os.getenv("API_TOKEN_SECRET", "")
 
 # Exchange and queue configuration
 CALENDAR_EXCHANGE = os.getenv("CALENDAR_EXCHANGE", "calendar.exchange")
@@ -115,6 +121,7 @@ def handle_calendar_invite(msg: CalendarInviteMessage, channel, delivery_tag):
             start_datetime=msg.body.start_datetime,
             end_datetime=msg.body.end_datetime,
             location=msg.body.location or "",
+            user_id=msg.body.user_id or None,
         )
 
         # Confirm enrollment back to Frontend
@@ -446,7 +453,7 @@ def start_consumer():
 
 
 def start_health_server(port: int = 30050):
-    """Start health check HTTP server."""
+    """Start HTTP server with health check and token registration endpoint."""
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
@@ -454,13 +461,74 @@ def start_health_server(port: int = 30050):
             self.end_headers()
             self.wfile.write(b"ok")
 
+        def do_POST(self):
+            if self.path == "/api/tokens":
+                self._handle_register_token()
+            else:
+                self.send_response(404)
+                self.end_headers()
+
+        def _handle_register_token(self):
+            """
+            POST /api/tokens
+            Body (JSON):
+              {
+                "user_id":       "usr_123",
+                "access_token":  "eyJ...",
+                "refresh_token": "0.A...",
+                "expires_in":    3600        // seconds until access_token expires
+              }
+            Requires header: Authorization: Bearer <API_TOKEN_SECRET>
+            """
+            if _API_TOKEN_SECRET:
+                auth = self.headers.get("Authorization", "")
+                if auth != f"Bearer {_API_TOKEN_SECRET}":
+                    self._json_response(401, {"error": "unauthorized"})
+                    return
+
+            try:
+                length = int(self.headers.get("Content-Length", 0))
+                body = self.rfile.read(length)
+                data = json.loads(body)
+
+                user_id = data.get("user_id", "").strip()
+                access_token = data.get("access_token", "").strip()
+                refresh_token = data.get("refresh_token", "").strip()
+                expires_in = int(data.get("expires_in", 3600))
+
+                if not all([user_id, access_token, refresh_token]):
+                    self._json_response(400, {"error": "user_id, access_token and refresh_token are required"})
+                    return
+
+                expires_at = datetime.now(tz=timezone.utc).replace(microsecond=0)
+                from datetime import timedelta
+                expires_at = expires_at + timedelta(seconds=expires_in)
+
+                TokenService.store(user_id, access_token, refresh_token, expires_at)
+                logger.info("Token registered via /api/tokens | user_id=%s", user_id)
+                self._json_response(200, {"status": "ok", "user_id": user_id})
+
+            except (json.JSONDecodeError, ValueError) as exc:
+                self._json_response(400, {"error": str(exc)})
+            except Exception as exc:
+                logger.error("POST /api/tokens failed: %s", exc, exc_info=True)
+                self._json_response(500, {"error": "internal server error"})
+
+        def _json_response(self, status: int, payload: dict):
+            body = json.dumps(payload).encode()
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
         def log_message(self, format, *args):
-            pass  # Silence logs
+            pass  # Silence access logs
 
     server = HTTPServer(("0.0.0.0", port), Handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
-    logger.info("Health endpoint started on port %d", port)
+    logger.info("HTTP server started on port %d (health + POST /api/tokens)", port)
 
 
 if __name__ == "__main__":

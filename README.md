@@ -13,10 +13,10 @@ The Planning service receives session requests from other teams via RabbitMQ, pu
 
 | Document | Description |
 |---|---|
-| [docs/MESSAGE_CONTRACTS.md](docs/MESSAGE_CONTRACTS.md) | All XML message formats, routing keys, and examples |
-| [docs/GRAPH_API.md](docs/GRAPH_API.md) | Microsoft Graph API setup, flows, and graph_sync table |
+| [docs/MESSAGE_CONTRACTS.md](docs/MESSAGE_CONTRACTS.md) | All XML message formats, routing keys, and token endpoint |
+| [docs/GRAPH_API.md](docs/GRAPH_API.md) | Microsoft Graph API setup, per-user token flow, and graph_sync table |
 | [docs/ERROR_HANDLING.md](docs/ERROR_HANDLING.md) | Error catalogue, retry strategy, observability queries |
-| [IMPLEMENTATION_SUMMARY.md](IMPLEMENTATION_SUMMARY.md) | Full implementation overview with file structure |
+| [docs/IMPLEMENTATION_SUMMARY.md](docs/IMPLEMENTATION_SUMMARY.md) | Full implementation overview with file structure |
 
 ---
 
@@ -26,23 +26,26 @@ The Planning service receives session requests from other teams via RabbitMQ, pu
 ┌──────────────────────────────────────────────────────────────────┐
 │                        Planning Service                          │
 │                                                                  │
-│  consumer.py                       producer.py                        │
-│  Listens on:                       Publishes to:                      │
-│  calendar.exchange                 planning.exchange                  │
-│    └─ calendar.invite                └─ planning.calendar.invite      │
-│  planning.exchange                        .confirmed                  │
-│    └─ planning.session.#             └─ planning.session.created      │
-│                                      └─ planning.session.updated      │
-│                                      └─ planning.session.deleted      │
-│                                      └─ planning.session.view_response│
+│  consumer.py                       producer.py                   │
+│  Listens on:                       Publishes to:                 │
+│  calendar.exchange                 planning.exchange             │
+│    └─ calendar.invite                └─ planning.calendar        │
+│  planning.exchange                        .invite.confirmed      │
+│    └─ planning.session.#             └─ planning.session.created │
+│                                      └─ planning.session.updated │
+│                                      └─ planning.session.deleted │
+│                                      └─ planning.session         │
+│                                           .view_response         │
 │                                                                  │
 │  xml_handlers.py  ←→  xsd_validator.py  ←→  schemas/*.xsd       │
 │  xml_models.py                                                   │
 │                                                                  │
 │  calendar_service.py  ←→  PostgreSQL                            │
+│  token_service.py     ←→  PostgreSQL (user_tokens)              │
 │  graph_service.py     ←→  Microsoft Graph API (Outlook)         │
 │                                                                  │
-│  Health endpoint: :30050                                         │
+│  REST endpoint: :30050/api/tokens   (token registration)        │
+│  Health endpoint: :30050            (GET → 200 ok)              │
 └──────────────────────────────────────────────────────────────────┘
                            │
                            ▼
@@ -55,7 +58,8 @@ The Planning service receives session requests from other teams via RabbitMQ, pu
 
 ```
 Planning/
-├── consumer.py               # RabbitMQ consumer — 5 message handlers
+│
+├── consumer.py               # RabbitMQ consumer — 5 message handlers + REST token endpoint
 ├── producer.py               # RabbitMQ publisher — XSD validation + retry
 ├── xml_models.py             # Dataclasses for all 6 message types
 ├── xml_handlers.py           # XML parsing and building
@@ -63,6 +67,7 @@ Planning/
 ├── calendar_service.py       # PostgreSQL service layer (5 classes)
 ├── graph_client.py           # Microsoft Graph API HTTP client (MSAL)
 ├── graph_service.py          # Graph + DB sync orchestration
+├── token_service.py          # Per-user OAuth token storage + auto-refresh
 ├── dashboard.py              # Sync status dashboard (http://localhost:8088)
 │
 ├── schemas/                  # XSD schema files (one per message type)
@@ -74,10 +79,11 @@ Planning/
 │   ├── session_view_request.xsd
 │   └── session_view_response.xsd
 │
-├── migrations/
+├── migrations/               # PostgreSQL migrations — run in order
 │   ├── 001_initial.sql       # Initial schema
 │   ├── 002_planning_schema.sql  # Sessions, message_log, audit tables
-│   └── 003_graph_sync.sql    # graph_sync table (session ↔ Outlook event)
+│   ├── 003_graph_sync.sql    # graph_sync table (session ↔ Outlook event)
+│   └── 004_user_tokens.sql   # user_tokens table (per-user encrypted OAuth tokens)
 │
 ├── tests/
 │   ├── conftest.py           # Shared fixtures
@@ -90,11 +96,17 @@ Planning/
 │   └── test_graph_service.py # Graph sync orchestration (13 tests)
 │
 ├── docs/
-│   ├── MESSAGE_CONTRACTS.md  # XML examples and routing keys
-│   ├── GRAPH_API.md          # Graph API setup and flows
-│   └── ERROR_HANDLING.md     # Error catalogue and recovery
+│   ├── MESSAGE_CONTRACTS.md      # XML examples, routing keys, token endpoint
+│   ├── GRAPH_API.md              # Graph API setup and per-user token flow
+│   ├── ERROR_HANDLING.md         # Error catalogue and recovery
+│   └── IMPLEMENTATION_SUMMARY.md # Full implementation overview
 │
-├── .env.example              # Environment variable template
+├── scripts/                  # One-time / utility scripts (not part of the service)
+│   ├── auth_setup.py         # One-time OAuth login to persist shared MSAL token cache
+│   ├── test_send.py          # Manual test: sends a calendar.invite to RabbitMQ
+│   └── frontend_demo.py      # Local demo of the frontend (http://localhost:8089)
+│
+├── .env.example              # Environment variable template — copy to .env
 ├── docker-compose.yml
 ├── Dockerfile
 └── requirements.txt
@@ -115,8 +127,17 @@ Planning/
 cp .env.example .env
 ```
 
-Fill in `.env` with your credentials. See [Environment Variables](#environment-variables) below.  
-For local development use `.env.local` with `RABBITMQ_HOST=localhost`.
+Fill in `.env`:
+- RabbitMQ and PostgreSQL credentials
+- Azure credentials for Graph API (optional — sync is disabled gracefully if absent)
+- Generate `TOKEN_ENCRYPTION_KEY`:
+  ```bash
+  python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+  ```
+- Generate `API_TOKEN_SECRET`:
+  ```bash
+  python -c "import secrets; print(secrets.token_hex(32))"
+  ```
 
 ### 2. Start
 
@@ -133,6 +154,7 @@ $env:ENV_FILE=".env.local"; docker compose --profile local up -d
 ```bash
 psql postgresql://user:pass@localhost:5433/planning_db < migrations/002_planning_schema.sql
 psql postgresql://user:pass@localhost:5433/planning_db < migrations/003_graph_sync.sql
+psql postgresql://user:pass@localhost:5433/planning_db < migrations/004_user_tokens.sql
 ```
 
 ### 4. Logs
@@ -150,20 +172,21 @@ python -m venv .venv
 .venv\Scripts\pip install -r requirements.txt
 ```
 
-Start consumer:
+Start consumer + REST endpoint:
 ```powershell
 .venv\Scripts\python consumer.py
 ```
 
 Test publisher:
 ```powershell
-# Publish all message types
-.venv\Scripts\python producer.py
-
-# Publish specific type
 .venv\Scripts\python producer.py created
 .venv\Scripts\python producer.py updated
 .venv\Scripts\python producer.py deleted
+```
+
+Send a manual test message:
+```powershell
+.venv\Scripts\python scripts/test_send.py
 ```
 
 ---
@@ -175,13 +198,13 @@ Test publisher:
 .venv\Scripts\pytest tests/ -v
 
 # By area
-.venv\Scripts\pytest tests/test_xsd_validator.py -v    # XSD validation
-.venv\Scripts\pytest tests/test_producer.py -v         # Publisher + retry
-.venv\Scripts\pytest tests/test_xml_handlers.py -v     # XML parsing/building
-.venv\Scripts\pytest tests/test_graph_client.py -v     # Graph API client
-.venv\Scripts\pytest tests/test_graph_service.py -v    # Graph sync service
-.venv\Scripts\pytest tests/test_consumer.py -v         # Consumer handlers
-.venv\Scripts\pytest tests/test_database.py -v         # Database CRUD
+.venv\Scripts\pytest tests/test_xsd_validator.py -v
+.venv\Scripts\pytest tests/test_producer.py -v
+.venv\Scripts\pytest tests/test_xml_handlers.py -v
+.venv\Scripts\pytest tests/test_graph_client.py -v
+.venv\Scripts\pytest tests/test_graph_service.py -v
+.venv\Scripts\pytest tests/test_consumer.py -v
+.venv\Scripts\pytest tests/test_database.py -v
 
 # With coverage
 .venv\Scripts\pytest tests/ --cov=. --cov-report=html
@@ -200,12 +223,30 @@ Total: **125+ tests** across 7 test files.
 | **Routing keys (in)** | `calendar.invite`, `planning.session.#` | — |
 | **Routing keys (out)** | — | `planning.calendar.invite.confirmed`, `planning.session.created`, `planning.session.updated`, `planning.session.deleted`, `planning.session.view_response` |
 
+Exchange names are configurable via env vars `CALENDAR_EXCHANGE` and `PLANNING_EXCHANGE`.
+
 | Environment | Host | Port |
 |---|---|---|
 | Production (AMQP) | see `.env` | `30000` |
 | Production (UI) | see `.env` | `30001` |
 | Local (AMQP) | `localhost` | `5672` |
 | Local (UI) | `localhost` | `15672` |
+
+---
+
+## REST Endpoint — Token Registration
+
+Drupal calls this once per user after OAuth login:
+
+```
+POST http://<host>:30050/api/tokens
+Authorization: Bearer <API_TOKEN_SECRET>
+Content-Type: application/json
+
+{ "user_id": "usr_123", "access_token": "eyJ...", "refresh_token": "0.A...", "expires_in": 3600 }
+```
+
+See [docs/MESSAGE_CONTRACTS.md](docs/MESSAGE_CONTRACTS.md#token-registration-post-apitokens) for the full spec.
 
 ---
 
@@ -218,16 +259,20 @@ Total: **125+ tests** across 7 test files.
 | `RABBITMQ_USER` | yes | Username |
 | `RABBITMQ_PASS` | yes | Password |
 | `RABBITMQ_VHOST` | yes | Virtual host (default: `/`) |
+| `CALENDAR_EXCHANGE` | no | Incoming exchange name (default: `calendar.exchange`) |
+| `PLANNING_EXCHANGE` | no | Outgoing exchange name (default: `planning.exchange`) |
 | `POSTGRES_DB` | yes | Database name |
 | `POSTGRES_USER` | yes | Database user |
 | `POSTGRES_PASSWORD` | yes | Database password |
-| `AZURE_TENANT_ID` | no | Azure AD tenant ID (Graph API) |
 | `AZURE_CLIENT_ID` | no | App registration client ID (Graph API) |
 | `AZURE_CLIENT_SECRET` | no | App registration client secret (Graph API) |
-| `GRAPH_CALENDAR_USER` | no | Mailbox UPN to manage via Graph API |
+| `TOKEN_CACHE_FILE` | no | MSAL shared token cache path (default: `token_cache.json`) |
+| `TOKEN_ENCRYPTION_KEY` | yes | Fernet key for encrypting stored OAuth tokens |
+| `API_TOKEN_SECRET` | yes | Shared secret for `POST /api/tokens` (Drupal → Planning) |
 
 > Never commit `.env` or `.env.local` to git.  
-> Graph API variables are optional — if absent, Outlook sync is disabled gracefully.
+> Graph API variables are optional — if absent, Outlook sync is disabled gracefully.  
+> `TOKEN_ENCRYPTION_KEY` must never change once tokens are stored — changing it invalidates all stored tokens.
 
 ---
 
@@ -239,6 +284,7 @@ Total: **125+ tests** across 7 test files.
 | pgAdmin (local) | http://localhost:5050 |
 | Health check | http://localhost:30050 |
 | **Sync Dashboard** | **http://localhost:8088** |
+| **Frontend Demo** | **http://localhost:8089** (run `python scripts/frontend_demo.py`) |
 
 ---
 

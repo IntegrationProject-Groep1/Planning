@@ -37,7 +37,7 @@ RABBITMQ_USER = os.getenv("RABBITMQ_USER", "guest")
 RABBITMQ_PASS = os.getenv("RABBITMQ_PASS", "guest")
 
 # Exchange configurations
-PLANNING_EXCHANGE = "planning.exchange"
+PLANNING_EXCHANGE = os.getenv("PLANNING_EXCHANGE", "planning.exchange")
 
 
 def _require_env(name: str, value: str | None) -> str:

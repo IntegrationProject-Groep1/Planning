@@ -21,6 +21,7 @@ import psycopg2
 from psycopg2.extras import DictCursor
 
 from graph_client import GraphClient, GraphClientError
+from token_service import TokenService
 
 logger = logging.getLogger(__name__)
 
@@ -111,12 +112,38 @@ def _mark_sync_deleted(session_id: str) -> None:
 # GraphService — public API used by consumer.py
 # ---------------------------------------------------------------------------
 
-def _build_client() -> Optional[GraphClient]:
+def _build_client(user_id: Optional[str] = None) -> Optional[GraphClient]:
     """
     Try to build a GraphClient.
-    Returns None (and logs a warning) when credentials are not configured,
+
+    When *user_id* is given, the per-user token is looked up via TokenService
+    and injected directly — no MSAL file cache is involved.
+
+    Without a user_id the shared service-account cache (auth_setup.py) is used.
+
+    Returns None (and logs a warning) when no valid token can be obtained,
     so the consumer can continue without crashing.
     """
+    if user_id:
+        try:
+            access_token = TokenService.get_valid_token(user_id)
+        except Exception as exc:
+            logger.warning(
+                "Could not retrieve token for user_id=%s — Outlook sync disabled: %s",
+                user_id,
+                exc,
+            )
+            return None
+
+        if not access_token:
+            logger.warning(
+                "No token registered for user_id=%s — Outlook sync disabled",
+                user_id,
+            )
+            return None
+
+        return GraphClient(access_token=access_token)
+
     try:
         return GraphClient()
     except GraphClientError as exc:
@@ -139,13 +166,18 @@ class GraphService:
         start_datetime: str,
         end_datetime: str,
         location: str = "",
+        user_id: Optional[str] = None,
     ) -> bool:
         """
         Create an Outlook event for a new session and persist the mapping.
 
+        When *user_id* is provided the calendar event is created in that user's
+        Outlook calendar using their stored token.  Without it the shared
+        service-account token cache is used.
+
         Returns True on success, False on failure (failure is logged + stored).
         """
-        client = _build_client()
+        client = _build_client(user_id)
         if client is None:
             return False
 
@@ -191,6 +223,7 @@ class GraphService:
         start_datetime: str,
         end_datetime: str,
         location: str = "",
+        user_id: Optional[str] = None,
     ) -> bool:
         """
         Update the Outlook event linked to an existing session.
@@ -198,7 +231,7 @@ class GraphService:
         If no synced event is found in the DB, a new event is created instead.
         Returns True on success, False on failure.
         """
-        client = _build_client()
+        client = _build_client(user_id)
         if client is None:
             return False
 
@@ -230,6 +263,7 @@ class GraphService:
                     start_datetime=start_datetime,
                     end_datetime=end_datetime,
                     location=location,
+                    user_id=user_id,
                 )
             return True
 
@@ -253,7 +287,11 @@ class GraphService:
             return False
 
     @staticmethod
-    def sync_deleted(session_id: str, reason: str = "Session cancelled") -> bool:
+    def sync_deleted(
+        session_id: str,
+        reason: str = "Session cancelled",
+        user_id: Optional[str] = None,
+    ) -> bool:
         """
         Cancel the Outlook event linked to a deleted session.
 
@@ -261,7 +299,7 @@ class GraphService:
         Returns True on success or if there was nothing to cancel.
         Returns False on Graph API failure.
         """
-        client = _build_client()
+        client = _build_client(user_id)
         if client is None:
             return False
 

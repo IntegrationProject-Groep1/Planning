@@ -6,6 +6,46 @@ All XSD schema files are in [`schemas/`](../schemas/).
 
 ---
 
+## Token Registration — `POST /api/tokens`
+
+Before any calendar sync can happen, Drupal must register the user's OAuth tokens once after login.
+
+```
+POST http://<planning-service-host>:30050/api/tokens
+Authorization: Bearer <API_TOKEN_SECRET>
+Content-Type: application/json
+```
+
+**Request body:**
+```json
+{
+  "user_id":       "usr_123",
+  "access_token":  "eyJ...",
+  "refresh_token": "0.A...",
+  "expires_in":    3600
+}
+```
+
+| Field | Required | Description |
+|---|---|---|
+| `user_id` | yes | Drupal internal user ID — same value used in `calendar.invite` XML |
+| `access_token` | yes | Microsoft OAuth access token |
+| `refresh_token` | yes | Microsoft OAuth refresh token |
+| `expires_in` | no | Seconds until access token expires (default: 3600) |
+
+**Responses:**
+
+| Status | Meaning |
+|---|---|
+| `200` | `{ "status": "ok", "user_id": "usr_123" }` |
+| `400` | Missing required field — `{ "error": "..." }` |
+| `401` | Missing or wrong `Authorization` header |
+| `500` | Internal error |
+
+Tokens are encrypted at rest (Fernet). The service refreshes them automatically when they expire.
+
+---
+
 ## Incoming messages
 
 ### `calendar.invite`
@@ -13,37 +53,49 @@ All XSD schema files are in [`schemas/`](../schemas/).
 Exchange: `calendar.exchange` | Routing key: `calendar.invite`
 
 ```xml
+<?xml version="1.0" encoding="UTF-8"?>
 <message xmlns="urn:integration:planning:v1">
   <header>
-    <message_id>msg-uuid</message_id>
+    <message_id>550e8400-e29b-41d4-a716-446655440000</message_id>
     <timestamp>2026-05-15T09:00:00Z</timestamp>
-    <source>frontend</source>
+    <source>drupal-frontend</source>
     <type>calendar.invite</type>
+    <version>1.0</version>
+    <correlation_id>corr-uuid-here</correlation_id>
   </header>
   <body>
     <session_id>sess-uuid-001</session_id>
     <title>Keynote: AI in Healthcare</title>
     <start_datetime>2026-05-15T14:00:00Z</start_datetime>
     <end_datetime>2026-05-15T15:00:00Z</end_datetime>
-    <location>online</location>
+    <location>Aula A - Campus Jette</location>
+    <user_id>usr_123</user_id>
   </body>
 </message>
 ```
 
-Required body fields: `session_id`, `title`, `start_datetime`, `end_datetime`
+| Field | Required | Description |
+|---|---|---|
+| `session_id` | yes | Session the user is enrolling in |
+| `title` | yes | Session title |
+| `start_datetime` | yes | ISO 8601 UTC |
+| `end_datetime` | yes | ISO 8601 UTC |
+| `location` | no | Venue name |
+| `user_id` | yes | Drupal user ID — must match the value sent to `POST /api/tokens`. Without a valid `user_id` no Outlook event is created. |
 
 ---
 
 ### `session_view_request`
 
-Exchange: `planning.exchange` | Routing key: `planning.session.view_request`
+Exchange: `calendar.exchange` | Routing key: `calendar.invite`
 
 ```xml
+<?xml version="1.0" encoding="UTF-8"?>
 <message xmlns="urn:integration:planning:v1">
   <header>
     <message_id>550e8400-e29b-41d4-a716-446655440000</message_id>
     <timestamp>2026-05-15T10:05:00Z</timestamp>
-    <source>planning</source>
+    <source>drupal-frontend</source>
     <type>session_view_request</type>
     <version>1.0</version>
     <correlation_id>corr-uuid-here</correlation_id>
@@ -68,11 +120,10 @@ See [ERROR_HANDLING.md](ERROR_HANDLING.md#4-outgoing-message--xsd-validation-fai
 Exchange: `planning.exchange` | Routing key: `planning.calendar.invite.confirmed`  
 XSD: [`schemas/calendar_invite_confirmed.xsd`](../schemas/calendar_invite_confirmed.xsd)
 
-Sent by Planning **after a `calendar.invite` is successfully processed** — i.e. the session is stored in the database and the Outlook calendar event has been created via the Graph API.
-
-Frontend should listen on `planning.exchange` with routing key `planning.calendar.invite.confirmed` to confirm that the enrollment was accepted.
+Sent after a `calendar.invite` is successfully processed and the Outlook event is created.
 
 ```xml
+<?xml version="1.0" encoding="UTF-8"?>
 <message xmlns="urn:integration:planning:v1">
   <header>
     <message_id>550e8400-e29b-41d4-a716-446655440000</message_id>
@@ -90,24 +141,26 @@ Frontend should listen on `planning.exchange` with routing key `planning.calenda
 </message>
 ```
 
-| Field | Type | Description |
-|---|---|---|
-| `session_id` | string | The session that was enrolled |
-| `original_message_id` | string | `message_id` from the incoming `calendar.invite` — use this to match the response to your original request |
-| `status` | enum | `confirmed` \| `failed` |
+| Field | Description |
+|---|---|
+| `session_id` | The session that was enrolled |
+| `original_message_id` | `message_id` from the incoming `calendar.invite` |
+| `status` | `confirmed` or `failed` |
 
-The `correlation_id` in the header matches the one sent in the original `calendar.invite`, so Frontend can correlate request and response.
+The `correlation_id` matches the one sent in the original `calendar.invite`.
 
 **Full enrollment flow:**
 
 ```
-Frontend → calendar.invite → calendar.exchange → planning.calendar.invite queue
+Frontend → POST /api/tokens (once at login)
+
+Frontend → calendar.invite → calendar.exchange
     Planning:
         1. Store session in DB
-        2. Create Outlook event (Graph API)
-        3. Publish calendar.invite.confirmed → planning.exchange
-                                                └─ planning.calendar.invite.confirmed
-Frontend ← calendar.invite.confirmed ←─────────────────────────────────────────
+        2. Look up user token (TokenService)
+        3. Create Outlook event in user's calendar (Graph API)
+        4. Publish calendar.invite.confirmed → planning.exchange
+Frontend ← calendar.invite.confirmed ←─────────────────────────
 ```
 
 ---
@@ -117,6 +170,7 @@ Frontend ← calendar.invite.confirmed ←────────────�
 Exchange: `planning.exchange` | Routing key: `planning.session.created`
 
 ```xml
+<?xml version="1.0" encoding="UTF-8"?>
 <message xmlns="urn:integration:planning:v1">
   <header>
     <message_id>550e8400-e29b-41d4-a716-446655440000</message_id>
@@ -147,6 +201,7 @@ Exchange: `planning.exchange` | Routing key: `planning.session.created`
 Exchange: `planning.exchange` | Routing key: `planning.session.updated`
 
 ```xml
+<?xml version="1.0" encoding="UTF-8"?>
 <message xmlns="urn:integration:planning:v1">
   <header>
     <message_id>550e8400-e29b-41d4-a716-446655440000</message_id>
@@ -177,6 +232,7 @@ Exchange: `planning.exchange` | Routing key: `planning.session.updated`
 Exchange: `planning.exchange` | Routing key: `planning.session.deleted`
 
 ```xml
+<?xml version="1.0" encoding="UTF-8"?>
 <message xmlns="urn:integration:planning:v1">
   <header>
     <message_id>550e8400-e29b-41d4-a716-446655440000</message_id>
@@ -201,6 +257,7 @@ Exchange: `planning.exchange` | Routing key: `planning.session.deleted`
 Exchange: `planning.exchange` | Routing key: `planning.session.view_response`
 
 ```xml
+<?xml version="1.0" encoding="UTF-8"?>
 <message xmlns="urn:integration:planning:v1">
   <header>
     <message_id>550e8400-e29b-41d4-a716-446655440000</message_id>
@@ -238,9 +295,24 @@ Exchange: `planning.exchange` | Routing key: `planning.session.view_response`
 
 ## Integration guide for other teams
 
-### Sending a `calendar.invite` (enrollment)
+### Step 1 — Register tokens (once per user at login)
 
-Publish to `calendar.exchange` with routing key `calendar.invite`:
+```python
+import requests
+
+requests.post(
+    "http://<planning-host>:30050/api/tokens",
+    headers={"Authorization": f"Bearer {API_TOKEN_SECRET}"},
+    json={
+        "user_id": "usr_123",
+        "access_token": ms_access_token,
+        "refresh_token": ms_refresh_token,
+        "expires_in": 3600,
+    },
+)
+```
+
+### Step 2 — Send a `calendar.invite` (enrollment)
 
 ```python
 import pika
@@ -257,16 +329,12 @@ channel.basic_publish(
 )
 ```
 
-Required body fields: `session_id`, `title`, `start_datetime`, `end_datetime`.  
-Optional: `location`. Include a `correlation_id` in the header to match the confirmation response.
+Include `<user_id>usr_123</user_id>` in the body and a `correlation_id` in the header.
 
-### Receiving the confirmation (`calendar.invite.confirmed`)
-
-After Planning processes the enrollment and creates the Outlook event, it publishes a confirmation on `planning.exchange`. Subscribe to receive it:
+### Step 3 — Receive the confirmation
 
 ```python
 channel.exchange_declare(exchange="planning.exchange", exchange_type="topic", durable=True)
-
 queue = channel.queue_declare(queue="", exclusive=True).method.queue
 channel.queue_bind(
     queue=queue,
@@ -276,4 +344,12 @@ channel.queue_bind(
 channel.basic_consume(queue=queue, on_message_callback=your_handler)
 ```
 
-Match the response to your original request using `original_message_id` (equals your sent `message_id`) or `correlation_id`.
+Match the response using `original_message_id` or `correlation_id`.
+
+### Receive all session events
+
+Bind with `planning.session.#` to get created, updated, and deleted in one queue:
+
+```python
+channel.queue_bind(queue=queue, exchange="planning.exchange", routing_key="planning.session.#")
+```

@@ -96,6 +96,7 @@ def parse_calendar_invite(xml_bytes: bytes) -> Optional[CalendarInviteMessage]:
             start_datetime=_get_text(body_elem, "start_datetime", required=True),
             end_datetime=_get_text(body_elem, "end_datetime", required=True),
             location=_get_text(body_elem, "location"),
+            user_id=_get_text(body_elem, "user_id"),
         )
 
         return CalendarInviteMessage(header=header, body=body)

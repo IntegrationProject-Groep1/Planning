@@ -52,9 +52,11 @@ class GraphClient:
     """
     Thin wrapper around Microsoft Graph API for Outlook calendar events.
 
-    Uses OAuth2 delegated auth — tokens are cached to disk and refreshed
-    automatically via the offline_access scope. Run auth_setup.py first
-    to perform the initial interactive login.
+    Two authentication modes:
+      1. Per-user token (preferred): pass ``access_token`` directly.
+         TokenService resolves and refreshes these before calling this class.
+      2. Shared service account (legacy): tokens are read from the MSAL
+         file cache produced by auth_setup.py.
     """
 
     def __init__(
@@ -62,31 +64,40 @@ class GraphClient:
         client_id: str = "",
         client_secret: str = "",
         cache_file: str = "",
+        access_token: str = "",
     ):
-        self._client_id = client_id or _CLIENT_ID
-        self._client_secret = client_secret or _CLIENT_SECRET
-        self._cache_file = cache_file or _TOKEN_CACHE_FILE
+        self._access_token = access_token  # per-user token, may be empty
 
-        if not all([self._client_id, self._client_secret]):
-            raise GraphClientError(
-                "Graph API credentials not configured. "
-                "Set AZURE_CLIENT_ID and AZURE_CLIENT_SECRET."
+        if not access_token:
+            # Fall back to the shared MSAL file-cache flow
+            self._client_id = client_id or _CLIENT_ID
+            self._client_secret = client_secret or _CLIENT_SECRET
+            self._cache_file = cache_file or _TOKEN_CACHE_FILE
+
+            if not all([self._client_id, self._client_secret]):
+                raise GraphClientError(
+                    "Graph API credentials not configured. "
+                    "Set AZURE_CLIENT_ID and AZURE_CLIENT_SECRET."
+                )
+
+            self._cache = _load_token_cache(self._cache_file)
+            self._msal_app = msal.ConfidentialClientApplication(
+                self._client_id,
+                authority=_AUTHORITY,
+                client_credential=self._client_secret,
+                token_cache=self._cache,
             )
-
-        self._cache = _load_token_cache(self._cache_file)
-        self._msal_app = msal.ConfidentialClientApplication(
-            self._client_id,
-            authority=_AUTHORITY,
-            client_credential=self._client_secret,
-            token_cache=self._cache,
-        )
 
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
 
     def _get_token(self) -> str:
-        """Acquire an access token from the MSAL cache (silent refresh)."""
+        """Return the access token — either the injected per-user token or
+        one acquired silently from the shared MSAL file cache."""
+        if self._access_token:
+            return self._access_token
+
         accounts = self._msal_app.get_accounts()
         result = None
         if accounts:
