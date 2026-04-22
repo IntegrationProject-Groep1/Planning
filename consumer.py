@@ -9,6 +9,7 @@ import pika
 import os
 import logging
 import threading
+import time
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from dotenv import load_dotenv
@@ -405,36 +406,46 @@ def on_message(channel, method, properties, body: bytes):
     route_message(msg, channel, method.delivery_tag)
 
 
-def start_consumer():
-    """Start the RabbitMQ consumer."""
-    user = _require_env("RABBITMQ_USER", RABBITMQ_USER)
-    password = _require_env("RABBITMQ_PASS", RABBITMQ_PASS)
+DEAD_LETTER_EXCHANGE = "planning.dlx"
+DEAD_LETTER_QUEUE = "planning.dead_letters"
 
-    credentials = pika.PlainCredentials(user, password)
-    params = pika.ConnectionParameters(
+_RECONNECT_DELAYS = [5, 10, 30, 60, 120]  # seconds between reconnect attempts
+
+
+def _build_params(user: str, password: str) -> pika.ConnectionParameters:
+    return pika.ConnectionParameters(
         host=RABBITMQ_HOST,
         port=RABBITMQ_PORT,
         virtual_host=RABBITMQ_VHOST,
-        credentials=credentials,
-        connection_attempts=3,
-        retry_delay=2,
+        credentials=pika.PlainCredentials(user, password),
+        heartbeat=60,
+        blocked_connection_timeout=30,
     )
 
-    connection = pika.BlockingConnection(params)
-    channel = connection.channel()
 
-    # Declare exchanges (durable)
+def _setup_channel(channel) -> None:
+    """Declare all exchanges, queues, and bindings (idempotent)."""
+    # Dead-letter exchange + queue
+    channel.exchange_declare(exchange=DEAD_LETTER_EXCHANGE, exchange_type="fanout", durable=True)
+    channel.queue_declare(queue=DEAD_LETTER_QUEUE, durable=True)
+    channel.queue_bind(queue=DEAD_LETTER_QUEUE, exchange=DEAD_LETTER_EXCHANGE)
+
+    dlx_args = {
+        "x-dead-letter-exchange": DEAD_LETTER_EXCHANGE,
+    }
+
+    # Main exchanges
     channel.exchange_declare(exchange=CALENDAR_EXCHANGE, exchange_type="topic", durable=True)
     channel.exchange_declare(exchange=PLANNING_EXCHANGE, exchange_type="topic", durable=True)
 
-    # Declare and bind calendar queue
-    channel.queue_declare(queue=CALENDAR_QUEUE, durable=True)
+    # Calendar queue with DLX
+    channel.queue_declare(queue=CALENDAR_QUEUE, durable=True, arguments=dlx_args)
     channel.queue_bind(
         queue=CALENDAR_QUEUE, exchange=CALENDAR_EXCHANGE, routing_key=CALENDAR_ROUTING_KEY
     )
 
-    # Declare and bind session events queue
-    channel.queue_declare(queue=SESSION_QUEUE, durable=True)
+    # Session events queue with DLX
+    channel.queue_declare(queue=SESSION_QUEUE, durable=True, arguments=dlx_args)
     for routing_key in SESSION_ROUTING_KEYS:
         channel.queue_bind(
             queue=SESSION_QUEUE, exchange=PLANNING_EXCHANGE, routing_key=routing_key
@@ -444,13 +455,65 @@ def start_consumer():
     channel.basic_consume(queue=CALENDAR_QUEUE, on_message_callback=on_message)
     channel.basic_consume(queue=SESSION_QUEUE, on_message_callback=on_message)
 
-    logger.info(
-        "Consumer started | calendar_exchange=%s | planning_exchange=%s | vhost=%s",
-        CALENDAR_EXCHANGE,
-        PLANNING_EXCHANGE,
-        RABBITMQ_VHOST,
-    )
-    channel.start_consuming()
+
+def start_consumer():
+    """Start the RabbitMQ consumer with boot-retry and automatic reconnection."""
+    user = _require_env("RABBITMQ_USER", RABBITMQ_USER)
+    password = _require_env("RABBITMQ_PASS", RABBITMQ_PASS)
+    params = _build_params(user, password)
+
+    attempt = 0
+    while True:
+        try:
+            logger.info(
+                "Connecting to RabbitMQ | host=%s port=%s vhost=%s (attempt %d)",
+                RABBITMQ_HOST, RABBITMQ_PORT, RABBITMQ_VHOST, attempt + 1,
+            )
+            connection = pika.BlockingConnection(params)
+            channel = connection.channel()
+            _setup_channel(channel)
+
+            logger.info(
+                "Consumer started | calendar_exchange=%s | planning_exchange=%s | vhost=%s | dlx=%s",
+                CALENDAR_EXCHANGE,
+                PLANNING_EXCHANGE,
+                RABBITMQ_VHOST,
+                DEAD_LETTER_EXCHANGE,
+            )
+            attempt = 0  # reset after successful connect
+            channel.start_consuming()
+
+        except pika.exceptions.AMQPConnectionError as exc:
+            delay = _RECONNECT_DELAYS[min(attempt, len(_RECONNECT_DELAYS) - 1)]
+            logger.error(
+                "RabbitMQ connection lost: %s — reconnecting in %ds (attempt %d)",
+                exc, delay, attempt + 1,
+            )
+            attempt += 1
+            time.sleep(delay)
+
+        except pika.exceptions.AMQPChannelError as exc:
+            delay = _RECONNECT_DELAYS[min(attempt, len(_RECONNECT_DELAYS) - 1)]
+            logger.error(
+                "RabbitMQ channel error: %s — reconnecting in %ds (attempt %d)",
+                exc, delay, attempt + 1,
+            )
+            attempt += 1
+            time.sleep(delay)
+
+        except KeyboardInterrupt:
+            logger.info("Consumer stopped by operator")
+            break
+
+        except Exception as exc:
+            delay = _RECONNECT_DELAYS[min(attempt, len(_RECONNECT_DELAYS) - 1)]
+            logger.error(
+                "Unexpected consumer error: %s — reconnecting in %ds (attempt %d)",
+                exc, delay, attempt + 1,
+                exc_info=True,
+            )
+            attempt += 1
+            time.sleep(delay)
 
 
 def start_health_server(port: int = 30050):

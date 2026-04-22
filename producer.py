@@ -35,6 +35,7 @@ RABBITMQ_HOST = os.getenv("RABBITMQ_HOST", "localhost")
 RABBITMQ_PORT = int(os.getenv("RABBITMQ_PORT", "5672"))
 RABBITMQ_USER = os.getenv("RABBITMQ_USER", "guest")
 RABBITMQ_PASS = os.getenv("RABBITMQ_PASS", "guest")
+RABBITMQ_VHOST = os.getenv("RABBITMQ_VHOST", "/")
 
 # Exchange configurations
 PLANNING_EXCHANGE = os.getenv("PLANNING_EXCHANGE", "planning.exchange")
@@ -56,6 +57,7 @@ def _get_connection():
         params = pika.ConnectionParameters(
             host=RABBITMQ_HOST,
             port=RABBITMQ_PORT,
+            virtual_host=RABBITMQ_VHOST,
             credentials=credentials,
             connection_attempts=3,
             retry_delay=2,
