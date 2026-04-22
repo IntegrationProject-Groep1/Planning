@@ -1,4 +1,5 @@
 # Planning Service — Integration Project Group 1
+# Planning Service — Integration Project Group 1
 
 ![Python](https://img.shields.io/badge/Python-3.12-blue?logo=python)
 ![RabbitMQ](https://img.shields.io/badge/RabbitMQ-3.12-orange?logo=rabbitmq)
@@ -54,6 +55,7 @@ The Planning service receives session requests from other teams via RabbitMQ, pu
 
 ---
 
+## Project Structure
 ## Project Structure
 
 ```
@@ -115,7 +117,9 @@ Planning/
 ---
 
 ## Quick Start
+## Quick Start
 
+### Requirements
 ### Requirements
 
 - Docker Desktop
@@ -212,8 +216,23 @@ Send a manual test message:
 
 Total: **125+ tests** across 7 test files.
 
+### XSD schemas used by the service
+
+- `xsd/session_created.xsd`
+- `xsd/session_updated.xsd`
+- `xsd/session_deleted.xsd`
+- `xsd/session_view_request.xsd`
+- `xsd/session_view_response.xsd`
+- `xsd/calendar_invite.xsd`
+
+Validation behavior:
+
+- `producer.py`: validates known outgoing message types (`session_created`, `session_updated`, `session_deleted`, `session_view_request`) against their XSD before publish.
+- `consumer.py`: validates incoming messages (`calendar.invite`, `session_created`, `session_updated`, `session_deleted`, `session_view_request`) against their XSD before processing.
+
 ---
 
+## RabbitMQ Configuration
 ## RabbitMQ Configuration
 
 | | Consumer | Producer |
@@ -227,6 +246,10 @@ Exchange names are configurable via env vars `CALENDAR_EXCHANGE` and `PLANNING_E
 
 | Environment | Host | Port |
 |---|---|---|
+| Production (AMQP) | see `.env` | `30000` |
+| Production (UI) | see `.env` | `30001` |
+| Local (AMQP) | `localhost` | `5672` |
+| Local (UI) | `localhost` | `15672` |
 | Production (AMQP) | see `.env` | `30000` |
 | Production (UI) | see `.env` | `30001` |
 | Local (AMQP) | `localhost` | `5672` |
@@ -251,7 +274,9 @@ See [docs/MESSAGE_CONTRACTS.md](docs/MESSAGE_CONTRACTS.md#token-registration-pos
 ---
 
 ## Environment Variables
+## Environment Variables
 
+| Variable | Required | Description |
 | Variable | Required | Description |
 |---|---|---|
 | `RABBITMQ_HOST` | yes | Broker hostname |

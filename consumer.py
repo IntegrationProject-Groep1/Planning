@@ -384,6 +384,97 @@ def route_message(msg, channel, delivery_tag):
         logger.error("Unknown message type: %s", type(msg))
         channel.basic_nack(delivery_tag=delivery_tag, requeue=False)
 
+    upsert_session(_body_to_session_payload(body))
+
+
+def handle_session_created(root: etree._Element):
+    """Process a validated session_created message."""
+    header = root.find("header")
+    body = root.find("body")
+
+    logger.info(
+        "session_created received | message_id=%s | source=%s | session_id=%s | title=%s | %s -> %s",
+        header.findtext("message_id"),
+        header.findtext("source"),
+        body.findtext("session_id"),
+        body.findtext("title"),
+        body.findtext("start_datetime"),
+        body.findtext("end_datetime"),
+    )
+
+    upsert_session(_body_to_session_payload(body))
+
+
+def handle_session_updated(root: etree._Element):
+    """Process a validated session_updated message."""
+    header = root.find("header")
+    body = root.find("body")
+
+    logger.info(
+        "session_updated received | message_id=%s | source=%s | session_id=%s | title=%s | %s -> %s",
+        header.findtext("message_id"),
+        header.findtext("source"),
+        body.findtext("session_id"),
+        body.findtext("title"),
+        body.findtext("start_datetime"),
+        body.findtext("end_datetime"),
+    )
+
+    upsert_session(_body_to_session_payload(body))
+
+
+def handle_session_deleted(root: etree._Element):
+    """Process a validated session_deleted message."""
+    header = root.find("header")
+    body = root.find("body")
+
+    logger.info(
+        "session_deleted received | message_id=%s | source=%s | session_id=%s | reason=%s | deleted_by=%s",
+        header.findtext("message_id"),
+        header.findtext("source"),
+        body.findtext("session_id"),
+        body.findtext("reason", default=""),
+        body.findtext("deleted_by", default=""),
+    )
+
+    delete_session(body.findtext("session_id", default=""))
+
+
+def handle_session_view_request(root: etree._Element, channel) -> None:
+    """Process a view request and publish view response to RabbitMQ."""
+    header = root.find("header")
+    body = root.find("body")
+    requested_session_id = body.findtext("session_id", default="").strip()
+
+    if requested_session_id:
+        session = get_session(requested_session_id)
+        sessions = [session] if session is not None else []
+    else:
+        sessions = list_sessions()
+
+    response_xml = _session_view_response_xml(
+        request_header=header,
+        requested_session_id=requested_session_id or None,
+        sessions=sessions,
+    )
+
+    channel.basic_publish(
+        exchange=EXCHANGE_NAME,
+        routing_key=ROUTING_KEY_VIEW_RESPONSE,
+        body=response_xml,
+        properties=pika.BasicProperties(
+            content_type="application/xml",
+            delivery_mode=2,
+        ),
+    )
+
+    logger.info(
+        "session_view_request processed | requested_session_id=%s | returned=%d | response_routing_key=%s",
+        requested_session_id or "*",
+        len(sessions),
+        ROUTING_KEY_VIEW_RESPONSE,
+    )
+
 
 def on_message(channel, method, properties, body: bytes):
     """RabbitMQ message callback."""
@@ -456,6 +547,14 @@ def start_health_server(port: int = 30050):
     """Start HTTP server with health check and token registration endpoint."""
 
     class Handler(BaseHTTPRequestHandler):
+        def _send_json(self, status_code: int, payload: object):
+            encoded = json.dumps(payload).encode("utf-8")
+            self.send_response(status_code)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(encoded)))
+            self.end_headers()
+            self.wfile.write(encoded)
+
         def do_GET(self):
             self.send_response(200)
             self.end_headers()
