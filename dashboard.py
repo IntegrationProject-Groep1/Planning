@@ -11,6 +11,7 @@ import logging
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from datetime import datetime, timezone
 from dotenv import load_dotenv
+from db_config import get_database_url
 
 load_dotenv()
 
@@ -18,15 +19,7 @@ logger = logging.getLogger(__name__)
 
 DASHBOARD_PORT = int(os.getenv("DASHBOARD_PORT", "8088"))
 
-_DB_URL = os.getenv("DATABASE_URL") or (
-    "postgresql://{user}:{password}@{host}:{port}/{db}".format(
-        user=os.getenv("POSTGRES_USER", "planning_user"),
-        password=os.getenv("POSTGRES_PASSWORD", ""),
-        host=os.getenv("POSTGRES_HOST", "localhost"),
-        port=os.getenv("POSTGRES_PORT", "5433"),   # 5433 = Docker host port
-        db=os.getenv("POSTGRES_DB", "planning_db"),
-    )
-)
+_DB_URL = get_database_url(default_host="localhost", default_port="5433")
 
 
 def _query(sql: str, params=None) -> list[dict]:

@@ -24,6 +24,8 @@ import psycopg2
 from cryptography.fernet import Fernet, InvalidToken
 from psycopg2.extras import DictCursor
 
+from db_config import get_database_url
+
 logger = logging.getLogger(__name__)
 
 _AUTHORITY = "https://login.microsoftonline.com/common"
@@ -32,15 +34,7 @@ _SCOPES = ["User.Read", "Calendars.ReadWrite"]
 _CLIENT_ID = os.getenv("AZURE_CLIENT_ID", "")
 _CLIENT_SECRET = os.getenv("AZURE_CLIENT_SECRET", "")
 
-_DB_URL: Optional[str] = os.getenv("DATABASE_URL") or (
-    "postgresql://{user}:{password}@{host}:{port}/{db}".format(
-        user=os.getenv("POSTGRES_USER", "planning_user"),
-        password=os.getenv("POSTGRES_PASSWORD", ""),
-        host=os.getenv("POSTGRES_HOST", "db"),
-        port=os.getenv("POSTGRES_PORT", "5432"),
-        db=os.getenv("POSTGRES_DB", "planning_db"),
-    )
-)
+_DB_URL: Optional[str] = get_database_url()
 
 
 # ---------------------------------------------------------------------------

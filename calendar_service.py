@@ -5,21 +5,17 @@ Handles all CRUD operations for sessions, calendar invites, events, and message 
 
 import psycopg2
 import psycopg2.extras
-import os
 import logging
 import json
 from datetime import datetime
 from typing import Optional, Dict, List
 from enum import Enum
+from db_config import get_db_config
 
 logger = logging.getLogger(__name__)
 
 # Database connection parameters
-POSTGRES_HOST = os.getenv("POSTGRES_HOST", "db")
-POSTGRES_PORT = int(os.getenv("POSTGRES_PORT", "5432"))
-POSTGRES_DB = os.getenv("POSTGRES_DB")
-POSTGRES_USER = os.getenv("POSTGRES_USER")
-POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD")
+DB_CONFIG = get_db_config()
 
 
 class MessageStatus(Enum):
@@ -33,11 +29,11 @@ def _get_connection():
     """Create and return a database connection."""
     try:
         conn = psycopg2.connect(
-            host=POSTGRES_HOST,
-            port=POSTGRES_PORT,
-            database=POSTGRES_DB,
-            user=POSTGRES_USER,
-            password=POSTGRES_PASSWORD,
+            host=DB_CONFIG["host"],
+            port=int(DB_CONFIG["port"]),
+            database=DB_CONFIG["name"],
+            user=DB_CONFIG["user"],
+            password=DB_CONFIG["password"],
         )
         return conn
     except psycopg2.Error as e:

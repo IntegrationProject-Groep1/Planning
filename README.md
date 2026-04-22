@@ -289,6 +289,10 @@ See [docs/MESSAGE_CONTRACTS.md](docs/MESSAGE_CONTRACTS.md#token-registration-pos
 | `POSTGRES_DB` | yes | Database name |
 | `POSTGRES_USER` | yes | Database user |
 | `POSTGRES_PASSWORD` | yes | Database password |
+| `POSTGRES_HOST` | no | Database hostname (`planning_db` in Docker, `localhost` for local dashboard access) |
+| `POSTGRES_PORT` | no | Database port (`5432` in Docker, mapped host port when connecting from outside Docker) |
+| `DB_HOST_PLANNING` / `DB_PORT_PLANNING` / `DB_NAME_PLANNING` / `DB_USER_PLANNING` / `DB_PASS_PLANNING` | no | Planning-specific deployment variable names; if set, these override all generic DB and `POSTGRES_*` values |
+| `DB_HOST` / `DB_PORT` / `DB_NAME` / `DB_USER` / `DB_PASS` | no | Generic deployment variable names; used when the planning-prefixed variables are absent |
 | `AZURE_CLIENT_ID` | no | App registration client ID (Graph API) |
 | `AZURE_CLIENT_SECRET` | no | App registration client secret (Graph API) |
 | `TOKEN_CACHE_FILE` | no | MSAL shared token cache path (default: `token_cache.json`) |

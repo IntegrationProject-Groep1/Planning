@@ -14,12 +14,12 @@ graph_client directly.
 """
 
 import logging
-import os
 from typing import Optional
 
 import psycopg2
 from psycopg2.extras import DictCursor
 
+from db_config import get_database_url
 from graph_client import GraphClient, GraphClientError
 from token_service import TokenService
 
@@ -29,15 +29,7 @@ logger = logging.getLogger(__name__)
 # Database helpers (reuses the same DB env vars as calendar_service.py)
 # ---------------------------------------------------------------------------
 
-_DB_URL: Optional[str] = os.getenv("DATABASE_URL") or (
-    "postgresql://{user}:{password}@{host}:{port}/{db}".format(
-        user=os.getenv("POSTGRES_USER", "planning_user"),
-        password=os.getenv("POSTGRES_PASSWORD", ""),
-        host=os.getenv("POSTGRES_HOST", "db"),
-        port=os.getenv("POSTGRES_PORT", "5432"),
-        db=os.getenv("POSTGRES_DB", "planning_db"),
-    )
-)
+_DB_URL: Optional[str] = get_database_url()
 
 
 def _get_conn():
