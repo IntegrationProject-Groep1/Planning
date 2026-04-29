@@ -886,6 +886,48 @@ def start_health_server(port: int = 30050):
     logger.info("HTTP server started on port %d (health + POST /api/tokens)", port)
 
 
+def start_heartbeat(interval: int = 1):
+    """Publish a heartbeat XML message to the 'heartbeat' queue every `interval` seconds."""
+    def _loop():
+        while True:
+            try:
+                user = _require_env("RABBITMQ_USER", RABBITMQ_USER)
+                password = _require_env("RABBITMQ_PASS", RABBITMQ_PASS)
+                connection = pika.BlockingConnection(_build_params(user, password))
+                channel = connection.channel()
+                channel.queue_declare(queue="heartbeat", durable=True)
+                while True:
+                    msg_id = str(__import__("uuid").uuid4())
+                    ts = datetime.now(timezone.utc).isoformat()
+                    xml = (
+                        f"<message>"
+                        f"<header>"
+                        f"<message_id>{msg_id}</message_id>"
+                        f"<timestamp>{ts}</timestamp>"
+                        f"<source>planning</source>"
+                        f"<type>heartbeat</type>"
+                        f"<version>2.0</version>"
+                        f"</header>"
+                        f"<body><status>online</status></body>"
+                        f"</message>"
+                    )
+                    channel.basic_publish(
+                        exchange="",
+                        routing_key="heartbeat",
+                        body=xml,
+                        properties=pika.BasicProperties(content_type="application/xml", delivery_mode=2),
+                    )
+                    time.sleep(interval)
+            except Exception as exc:
+                logger.warning("Heartbeat error: %s — retrying in 5s", exc)
+                time.sleep(5)
+
+    thread = threading.Thread(target=_loop, daemon=True)
+    thread.start()
+    logger.info("Heartbeat broadcaster started (interval=%ds, queue=heartbeat)", interval)
+
+
 if __name__ == "__main__":
     start_health_server()
+    start_heartbeat()
     start_consumer()

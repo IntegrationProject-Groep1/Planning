@@ -196,9 +196,9 @@ def publish_calendar_invite_confirmed(
             ics_url=ics_url,
         )
 
-        logger.info("Built XML for calendar.invite.confirmed:\n%s", xml_message)
+        logger.info("Built XML for calendar_invite_confirmed:\n%s", xml_message)
         return _publish_with_validation_and_retry(
-            xml_message, "planning.to.frontend.calendar.invite.confirmed", "calendar.invite.confirmed"
+            xml_message, "planning.to.frontend.calendar.invite.confirmed", "calendar_invite_confirmed"
         )
 
     except Exception as e:
@@ -238,9 +238,13 @@ def publish_session_created(
         )
 
         logger.info("Built XML for session_created:\n%s", xml_message)
-        return _publish_with_validation_and_retry(
+        ok_frontend = _publish_with_validation_and_retry(
             xml_message, "planning.to.frontend.session.created", "session_created"
         )
+        ok_crm = _publish_with_validation_and_retry(
+            xml_message, "planning.session.created", "session_created"
+        )
+        return ok_frontend and ok_crm
 
     except Exception as e:
         logger.error("Error publishing session_created: %s", e, exc_info=True)
@@ -279,9 +283,13 @@ def publish_session_updated(
         )
 
         logger.info("Built XML for session_updated:\n%s", xml_message)
-        return _publish_with_validation_and_retry(
+        ok_frontend = _publish_with_validation_and_retry(
             xml_message, "planning.to.frontend.session.updated", "session_updated"
         )
+        ok_crm = _publish_with_validation_and_retry(
+            xml_message, "planning.session.updated", "session_updated"
+        )
+        return ok_frontend and ok_crm
 
     except Exception as e:
         logger.error("Error publishing session_updated: %s", e, exc_info=True)
@@ -308,9 +316,13 @@ def publish_session_deleted(
         )
 
         logger.info("Built XML for session_deleted:\n%s", xml_message)
-        return _publish_with_validation_and_retry(
+        ok_frontend = _publish_with_validation_and_retry(
             xml_message, "planning.to.frontend.session.deleted", "session_deleted"
         )
+        ok_crm = _publish_with_validation_and_retry(
+            xml_message, "planning.session.deleted", "session_deleted"
+        )
+        return ok_frontend and ok_crm
 
     except Exception as e:
         logger.error("Error publishing session_deleted: %s", e, exc_info=True)

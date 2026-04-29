@@ -19,7 +19,7 @@ class MessageHeader:
     timestamp: str
     source: str
     type: str
-    version: Optional[str] = "1.0"
+    version: Optional[str] = "2.0"
     correlation_id: Optional[str] = None
 
 
@@ -29,11 +29,12 @@ class MessageHeader:
 
 @dataclass
 class CalendarInviteBody:
-    """Body of calendar.invite message."""
+    """Body of calendar_invite message."""
     session_id: str
     title: str
     start_datetime: str
     end_datetime: str
+    attendee_email: str = ""
     location: Optional[str] = None
     user_id: Optional[str] = None
 
@@ -309,8 +310,8 @@ class CalendarInviteConfirmedMessage:
 # ============================================================================
 
 MESSAGE_TYPES = {
-    "calendar.invite": CalendarInviteMessage,
-    "calendar.invite.confirmed": CalendarInviteConfirmedMessage,
+    "calendar_invite": CalendarInviteMessage,
+    "calendar_invite_confirmed": CalendarInviteConfirmedMessage,
     "session_created": SessionCreatedMessage,
     "session_updated": SessionUpdatedMessage,
     "session_deleted": SessionDeletedMessage,

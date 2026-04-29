@@ -1,10 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<xs:schema
-    xmlns:xs="http://www.w3.org/2001/XMLSchema"
-    targetNamespace="urn:integration:planning:v1"
-    xmlns="urn:integration:planning:v1"
-    elementFormDefault="qualified"
-    attributeFormDefault="unqualified">
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
 
     <xs:element name="message" type="CalendarInviteConfirmedMessageType"/>
 
@@ -23,11 +18,17 @@
             <xs:element name="type">
                 <xs:simpleType>
                     <xs:restriction base="xs:string">
-                        <xs:enumeration value="calendar.invite.confirmed"/>
+                        <xs:enumeration value="calendar_invite_confirmed"/>
                     </xs:restriction>
                 </xs:simpleType>
             </xs:element>
-            <xs:element name="version" type="xs:string" minOccurs="0"/>
+            <xs:element name="version">
+                <xs:simpleType>
+                    <xs:restriction base="xs:string">
+                        <xs:enumeration value="2.0"/>
+                    </xs:restriction>
+                </xs:simpleType>
+            </xs:element>
             <xs:element name="correlation_id" type="xs:string" minOccurs="0"/>
         </xs:sequence>
     </xs:complexType>
@@ -44,8 +45,7 @@
                     </xs:restriction>
                 </xs:simpleType>
             </xs:element>
-            <!-- Present only for non-Outlook users: iCalendar subscription URL.
-                 Replace http:// with webcal:// for direct calendar-app subscription. -->
+            <!-- ics_url: aanwezig voor niet-Outlook gebruikers -->
             <xs:element name="ics_url" type="xs:anyURI" minOccurs="0"/>
         </xs:sequence>
     </xs:complexType>

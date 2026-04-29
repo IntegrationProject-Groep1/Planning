@@ -34,7 +34,7 @@ from xml_models import (
 
 logger = logging.getLogger(__name__)
 
-XMLNS = "urn:integration:planning:v1"
+XMLNS = "urn:integration:planning:v1"  # kept only for namespace-stripping on inbound messages
 
 
 def _strip_ns(root: etree._Element) -> etree._Element:
@@ -101,6 +101,7 @@ def parse_calendar_invite(xml_bytes: bytes) -> Optional[CalendarInviteMessage]:
             title=_get_text(body_elem, "title", required=True),
             start_datetime=_get_text(body_elem, "start_datetime", required=True),
             end_datetime=_get_text(body_elem, "end_datetime", required=True),
+            attendee_email=_get_text(body_elem, "attendee_email") or "",
             location=_get_text(body_elem, "location"),
             user_id=_get_text(body_elem, "user_id"),
         )
@@ -387,7 +388,7 @@ def build_session_created_xml(
     correlation_id: Optional[str] = None,
 ) -> str:
     """Build session_created XML message."""
-    root = etree.Element("message", xmlns=XMLNS)
+    root = etree.Element("message")
 
     # Header
     header = etree.SubElement(root, "header")
@@ -395,7 +396,7 @@ def build_session_created_xml(
     etree.SubElement(header, "timestamp").text = datetime.now(timezone.utc).isoformat()
     etree.SubElement(header, "source").text = "planning"
     etree.SubElement(header, "type").text = "session_created"
-    etree.SubElement(header, "version").text = "1.0"
+    etree.SubElement(header, "version").text = "2.0"
     etree.SubElement(header, "correlation_id").text = correlation_id or str(uuid.uuid4())
 
     # Body
@@ -426,14 +427,14 @@ def build_session_updated_xml(
     correlation_id: Optional[str] = None,
 ) -> str:
     """Build session_updated XML message."""
-    root = etree.Element("message", xmlns=XMLNS)
+    root = etree.Element("message")
 
     header = etree.SubElement(root, "header")
     etree.SubElement(header, "message_id").text = str(uuid.uuid4())
     etree.SubElement(header, "timestamp").text = datetime.now(timezone.utc).isoformat()
     etree.SubElement(header, "source").text = "planning"
     etree.SubElement(header, "type").text = "session_updated"
-    etree.SubElement(header, "version").text = "1.0"
+    etree.SubElement(header, "version").text = "2.0"
     etree.SubElement(header, "correlation_id").text = correlation_id or str(uuid.uuid4())
 
     body = etree.SubElement(root, "body")
@@ -462,14 +463,14 @@ def build_session_create_request_xml(
     correlation_id: Optional[str] = None,
 ) -> str:
     """Build session_create_request XML message (simulates Drupal/frontend)."""
-    root = etree.Element("message", xmlns=XMLNS)
+    root = etree.Element("message")
 
     header = etree.SubElement(root, "header")
     etree.SubElement(header, "message_id").text = str(uuid.uuid4())
     etree.SubElement(header, "timestamp").text = datetime.now(timezone.utc).isoformat()
     etree.SubElement(header, "source").text = "frontend"
     etree.SubElement(header, "type").text = "session_create_request"
-    etree.SubElement(header, "version").text = "1.0"
+    etree.SubElement(header, "version").text = "2.0"
     if correlation_id:
         etree.SubElement(header, "correlation_id").text = correlation_id
 
@@ -497,14 +498,14 @@ def build_session_deleted_xml(
     correlation_id: Optional[str] = None,
 ) -> str:
     """Build session_deleted XML message."""
-    root = etree.Element("message", xmlns=XMLNS)
+    root = etree.Element("message")
 
     header = etree.SubElement(root, "header")
     etree.SubElement(header, "message_id").text = str(uuid.uuid4())
     etree.SubElement(header, "timestamp").text = datetime.now(timezone.utc).isoformat()
     etree.SubElement(header, "source").text = "planning"
     etree.SubElement(header, "type").text = "session_deleted"
-    etree.SubElement(header, "version").text = "1.0"
+    etree.SubElement(header, "version").text = "2.0"
     etree.SubElement(header, "correlation_id").text = correlation_id or str(uuid.uuid4())
 
     body = etree.SubElement(root, "body")
@@ -527,14 +528,14 @@ def build_session_update_request_xml(
     correlation_id: Optional[str] = None,
 ) -> str:
     """Build session_update_request XML message (simulates Drupal/frontend)."""
-    root = etree.Element("message", xmlns=XMLNS)
+    root = etree.Element("message")
 
     header = etree.SubElement(root, "header")
     etree.SubElement(header, "message_id").text = str(uuid.uuid4())
     etree.SubElement(header, "timestamp").text = datetime.now(timezone.utc).isoformat()
     etree.SubElement(header, "source").text = "frontend"
     etree.SubElement(header, "type").text = "session_update_request"
-    etree.SubElement(header, "version").text = "1.0"
+    etree.SubElement(header, "version").text = "2.0"
     if correlation_id:
         etree.SubElement(header, "correlation_id").text = correlation_id
 
@@ -561,14 +562,14 @@ def build_session_delete_request_xml(
     correlation_id: Optional[str] = None,
 ) -> str:
     """Build session_delete_request XML message (simulates Drupal/frontend)."""
-    root = etree.Element("message", xmlns=XMLNS)
+    root = etree.Element("message")
 
     header = etree.SubElement(root, "header")
     etree.SubElement(header, "message_id").text = str(uuid.uuid4())
     etree.SubElement(header, "timestamp").text = datetime.now(timezone.utc).isoformat()
     etree.SubElement(header, "source").text = "frontend"
     etree.SubElement(header, "type").text = "session_delete_request"
-    etree.SubElement(header, "version").text = "1.0"
+    etree.SubElement(header, "version").text = "2.0"
     if correlation_id:
         etree.SubElement(header, "correlation_id").text = correlation_id
 
@@ -587,7 +588,7 @@ def build_session_view_response_xml(
     correlation_id: Optional[str] = None,
 ) -> str:
     """Build session_view_response XML message.
-    
+
     Args:
         request_message_id: Message ID of the incoming request
         requested_session_id: Requested session ID (can be None)
@@ -595,14 +596,14 @@ def build_session_view_response_xml(
         sessions: List of dicts with session details
         correlation_id: Correlation ID from request
     """
-    root = etree.Element("message", xmlns=XMLNS)
+    root = etree.Element("message")
 
     header = etree.SubElement(root, "header")
     etree.SubElement(header, "message_id").text = str(uuid.uuid4())
     etree.SubElement(header, "timestamp").text = datetime.now(timezone.utc).isoformat()
     etree.SubElement(header, "source").text = "planning"
     etree.SubElement(header, "type").text = "session_view_response"
-    etree.SubElement(header, "version").text = "1.0"
+    etree.SubElement(header, "version").text = "2.0"
     etree.SubElement(header, "correlation_id").text = correlation_id or str(uuid.uuid4())
 
     body = etree.SubElement(root, "body")
@@ -643,15 +644,15 @@ def build_calendar_invite_confirmed_xml(
     correlation_id: Optional[str] = None,
     ics_url: Optional[str] = None,
 ) -> str:
-    """Build calendar.invite.confirmed XML message (outgoing response to Frontend)."""
-    root = etree.Element("message", xmlns=XMLNS)
+    """Build calendar_invite_confirmed XML message (outgoing response to Frontend)."""
+    root = etree.Element("message")
 
     header = etree.SubElement(root, "header")
     etree.SubElement(header, "message_id").text = str(uuid.uuid4())
     etree.SubElement(header, "timestamp").text = datetime.now(timezone.utc).isoformat()
     etree.SubElement(header, "source").text = "planning"
-    etree.SubElement(header, "type").text = "calendar.invite.confirmed"
-    etree.SubElement(header, "version").text = "1.0"
+    etree.SubElement(header, "type").text = "calendar_invite_confirmed"
+    etree.SubElement(header, "version").text = "2.0"
     etree.SubElement(header, "correlation_id").text = correlation_id or str(uuid.uuid4())
 
     body = etree.SubElement(root, "body")
@@ -669,28 +670,34 @@ def build_calendar_invite_xml(
     title: str,
     start_datetime: str,
     end_datetime: str,
+    attendee_email: str = "",
     location: str = "",
     source: str = "frontend",
     user_id: Optional[str] = None,
+    correlation_id: Optional[str] = None,
 ) -> str:
-    """Build a calendar.invite XML message (outgoing from the frontend demo)."""
-    root = etree.Element("message", xmlns=XMLNS)
+    """Build a calendar_invite XML message (outgoing from the frontend demo)."""
+    root = etree.Element("message")
 
     header = etree.SubElement(root, "header")
     etree.SubElement(header, "message_id").text = str(uuid.uuid4())
     etree.SubElement(header, "timestamp").text = datetime.now(timezone.utc).isoformat()
     etree.SubElement(header, "source").text = source
-    etree.SubElement(header, "type").text = "calendar.invite"
+    etree.SubElement(header, "type").text = "calendar_invite"
+    etree.SubElement(header, "version").text = "2.0"
+    if correlation_id:
+        etree.SubElement(header, "correlation_id").text = correlation_id
 
     body = etree.SubElement(root, "body")
+    if user_id:
+        etree.SubElement(body, "user_id").text = user_id
     etree.SubElement(body, "session_id").text = session_id
     etree.SubElement(body, "title").text = title
     etree.SubElement(body, "start_datetime").text = start_datetime
     etree.SubElement(body, "end_datetime").text = end_datetime
     if location:
         etree.SubElement(body, "location").text = location
-    if user_id:
-        etree.SubElement(body, "user_id").text = user_id
+    etree.SubElement(body, "attendee_email").text = attendee_email
 
     return etree.tostring(root, encoding="unicode", pretty_print=True)
 
@@ -721,7 +728,7 @@ def parse_message(xml_bytes: bytes) -> Optional[Union[
 
         msg_type = _get_text(header_elem, "type")
 
-        if msg_type == "calendar.invite":
+        if msg_type == "calendar_invite":
             return parse_calendar_invite(xml_bytes)
         elif msg_type == "session_created":
             return parse_session_created(xml_bytes)
