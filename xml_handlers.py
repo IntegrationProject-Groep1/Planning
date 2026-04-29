@@ -19,6 +19,12 @@ from xml_models import (
     SessionUpdatedBody,
     SessionDeletedMessage,
     SessionDeletedBody,
+    SessionCreateRequestMessage,
+    SessionCreateRequestBody,
+    SessionUpdateRequestMessage,
+    SessionUpdateRequestBody,
+    SessionDeleteRequestMessage,
+    SessionDeleteRequestBody,
     SessionViewRequestMessage,
     SessionViewRequestBody,
     SessionViewResponseMessage,
@@ -223,6 +229,116 @@ def parse_session_deleted(xml_bytes: bytes) -> Optional[SessionDeletedMessage]:
         return None
 
 
+def parse_session_create_request(xml_bytes: bytes) -> Optional[SessionCreateRequestMessage]:
+    """Parse session_create_request message from Drupal/frontend."""
+    try:
+        root = _strip_ns(etree.fromstring(xml_bytes))
+        header_elem = root.find("header")
+        body_elem = root.find("body")
+
+        if header_elem is None or body_elem is None:
+            logger.error("Missing header or body in session_create_request")
+            return None
+
+        header = MessageHeader(
+            message_id=_get_text(header_elem, "message_id", required=True),
+            timestamp=_get_text(header_elem, "timestamp", required=True),
+            source=_get_text(header_elem, "source", required=True),
+            type=_get_text(header_elem, "type", required=True),
+            version=_get_text(header_elem, "version"),
+            correlation_id=_get_text(header_elem, "correlation_id"),
+        )
+
+        max_att_str = _get_text(body_elem, "max_attendees")
+        body = SessionCreateRequestBody(
+            session_id=_get_text(body_elem, "session_id", required=True),
+            title=_get_text(body_elem, "title", required=True),
+            start_datetime=_get_text(body_elem, "start_datetime", required=True),
+            end_datetime=_get_text(body_elem, "end_datetime", required=True),
+            location=_get_text(body_elem, "location"),
+            session_type=_get_text(body_elem, "session_type"),
+            status=_get_text(body_elem, "status"),
+            max_attendees=int(max_att_str) if max_att_str else None,
+        )
+
+        return SessionCreateRequestMessage(header=header, body=body)
+
+    except (etree.XMLSyntaxError, ValueError, Exception) as e:
+        logger.error(f"Error parsing session_create_request: {e}")
+        return None
+
+
+def parse_session_update_request(xml_bytes: bytes) -> Optional[SessionUpdateRequestMessage]:
+    """Parse session_update_request message from Drupal/frontend."""
+    try:
+        root = _strip_ns(etree.fromstring(xml_bytes))
+        header_elem = root.find("header")
+        body_elem = root.find("body")
+
+        if header_elem is None or body_elem is None:
+            logger.error("Missing header or body in session_update_request")
+            return None
+
+        header = MessageHeader(
+            message_id=_get_text(header_elem, "message_id", required=True),
+            timestamp=_get_text(header_elem, "timestamp", required=True),
+            source=_get_text(header_elem, "source", required=True),
+            type=_get_text(header_elem, "type", required=True),
+            version=_get_text(header_elem, "version"),
+            correlation_id=_get_text(header_elem, "correlation_id"),
+        )
+
+        max_att_str = _get_text(body_elem, "max_attendees")
+        body = SessionUpdateRequestBody(
+            session_id=_get_text(body_elem, "session_id", required=True),
+            title=_get_text(body_elem, "title", required=True),
+            start_datetime=_get_text(body_elem, "start_datetime", required=True),
+            end_datetime=_get_text(body_elem, "end_datetime", required=True),
+            location=_get_text(body_elem, "location"),
+            session_type=_get_text(body_elem, "session_type"),
+            status=_get_text(body_elem, "status"),
+            max_attendees=int(max_att_str) if max_att_str else None,
+        )
+
+        return SessionUpdateRequestMessage(header=header, body=body)
+
+    except (etree.XMLSyntaxError, ValueError, Exception) as e:
+        logger.error(f"Error parsing session_update_request: {e}")
+        return None
+
+
+def parse_session_delete_request(xml_bytes: bytes) -> Optional[SessionDeleteRequestMessage]:
+    """Parse session_delete_request message from Drupal/frontend."""
+    try:
+        root = _strip_ns(etree.fromstring(xml_bytes))
+        header_elem = root.find("header")
+        body_elem = root.find("body")
+
+        if header_elem is None or body_elem is None:
+            logger.error("Missing header or body in session_delete_request")
+            return None
+
+        header = MessageHeader(
+            message_id=_get_text(header_elem, "message_id", required=True),
+            timestamp=_get_text(header_elem, "timestamp", required=True),
+            source=_get_text(header_elem, "source", required=True),
+            type=_get_text(header_elem, "type", required=True),
+            version=_get_text(header_elem, "version"),
+            correlation_id=_get_text(header_elem, "correlation_id"),
+        )
+
+        body = SessionDeleteRequestBody(
+            session_id=_get_text(body_elem, "session_id", required=True),
+            reason=_get_text(body_elem, "reason"),
+        )
+
+        return SessionDeleteRequestMessage(header=header, body=body)
+
+    except (etree.XMLSyntaxError, ValueError, Exception) as e:
+        logger.error(f"Error parsing session_delete_request: {e}")
+        return None
+
+
 def parse_session_view_request(xml_bytes: bytes) -> Optional[SessionViewRequestMessage]:
     """Parse and validate session_view_request message."""
     try:
@@ -334,6 +450,46 @@ def build_session_updated_xml(
     return etree.tostring(root, encoding="unicode", pretty_print=True)
 
 
+def build_session_create_request_xml(
+    session_id: str,
+    title: str,
+    start_datetime: str,
+    end_datetime: str,
+    location: str = "",
+    session_type: Optional[str] = None,
+    status: Optional[str] = None,
+    max_attendees: Optional[int] = None,
+    correlation_id: Optional[str] = None,
+) -> str:
+    """Build session_create_request XML message (simulates Drupal/frontend)."""
+    root = etree.Element("message", xmlns=XMLNS)
+
+    header = etree.SubElement(root, "header")
+    etree.SubElement(header, "message_id").text = str(uuid.uuid4())
+    etree.SubElement(header, "timestamp").text = datetime.now(timezone.utc).isoformat()
+    etree.SubElement(header, "source").text = "frontend"
+    etree.SubElement(header, "type").text = "session_create_request"
+    etree.SubElement(header, "version").text = "1.0"
+    if correlation_id:
+        etree.SubElement(header, "correlation_id").text = correlation_id
+
+    body = etree.SubElement(root, "body")
+    etree.SubElement(body, "session_id").text = session_id
+    etree.SubElement(body, "title").text = title
+    etree.SubElement(body, "start_datetime").text = start_datetime
+    etree.SubElement(body, "end_datetime").text = end_datetime
+    if location:
+        etree.SubElement(body, "location").text = location
+    if session_type:
+        etree.SubElement(body, "session_type").text = session_type
+    if status:
+        etree.SubElement(body, "status").text = status
+    if max_attendees is not None:
+        etree.SubElement(body, "max_attendees").text = str(max_attendees)
+
+    return etree.tostring(root, encoding="unicode", pretty_print=True)
+
+
 def build_session_deleted_xml(
     session_id: str,
     reason: str = "",
@@ -355,6 +511,70 @@ def build_session_deleted_xml(
     etree.SubElement(body, "session_id").text = session_id
     etree.SubElement(body, "reason").text = reason
     etree.SubElement(body, "deleted_by").text = deleted_by
+
+    return etree.tostring(root, encoding="unicode", pretty_print=True)
+
+
+def build_session_update_request_xml(
+    session_id: str,
+    title: str,
+    start_datetime: str,
+    end_datetime: str,
+    location: str = "",
+    session_type: Optional[str] = None,
+    status: Optional[str] = None,
+    max_attendees: Optional[int] = None,
+    correlation_id: Optional[str] = None,
+) -> str:
+    """Build session_update_request XML message (simulates Drupal/frontend)."""
+    root = etree.Element("message", xmlns=XMLNS)
+
+    header = etree.SubElement(root, "header")
+    etree.SubElement(header, "message_id").text = str(uuid.uuid4())
+    etree.SubElement(header, "timestamp").text = datetime.now(timezone.utc).isoformat()
+    etree.SubElement(header, "source").text = "frontend"
+    etree.SubElement(header, "type").text = "session_update_request"
+    etree.SubElement(header, "version").text = "1.0"
+    if correlation_id:
+        etree.SubElement(header, "correlation_id").text = correlation_id
+
+    body = etree.SubElement(root, "body")
+    etree.SubElement(body, "session_id").text = session_id
+    etree.SubElement(body, "title").text = title
+    etree.SubElement(body, "start_datetime").text = start_datetime
+    etree.SubElement(body, "end_datetime").text = end_datetime
+    if location:
+        etree.SubElement(body, "location").text = location
+    if session_type:
+        etree.SubElement(body, "session_type").text = session_type
+    if status:
+        etree.SubElement(body, "status").text = status
+    if max_attendees is not None:
+        etree.SubElement(body, "max_attendees").text = str(max_attendees)
+
+    return etree.tostring(root, encoding="unicode", pretty_print=True)
+
+
+def build_session_delete_request_xml(
+    session_id: str,
+    reason: str = "cancelled",
+    correlation_id: Optional[str] = None,
+) -> str:
+    """Build session_delete_request XML message (simulates Drupal/frontend)."""
+    root = etree.Element("message", xmlns=XMLNS)
+
+    header = etree.SubElement(root, "header")
+    etree.SubElement(header, "message_id").text = str(uuid.uuid4())
+    etree.SubElement(header, "timestamp").text = datetime.now(timezone.utc).isoformat()
+    etree.SubElement(header, "source").text = "frontend"
+    etree.SubElement(header, "type").text = "session_delete_request"
+    etree.SubElement(header, "version").text = "1.0"
+    if correlation_id:
+        etree.SubElement(header, "correlation_id").text = correlation_id
+
+    body = etree.SubElement(root, "body")
+    etree.SubElement(body, "session_id").text = session_id
+    etree.SubElement(body, "reason").text = reason
 
     return etree.tostring(root, encoding="unicode", pretty_print=True)
 
@@ -421,6 +641,7 @@ def build_calendar_invite_confirmed_xml(
     original_message_id: str,
     status: str = "confirmed",
     correlation_id: Optional[str] = None,
+    ics_url: Optional[str] = None,
 ) -> str:
     """Build calendar.invite.confirmed XML message (outgoing response to Frontend)."""
     root = etree.Element("message", xmlns=XMLNS)
@@ -437,6 +658,8 @@ def build_calendar_invite_confirmed_xml(
     etree.SubElement(body, "session_id").text = session_id
     etree.SubElement(body, "original_message_id").text = original_message_id
     etree.SubElement(body, "status").text = status
+    if ics_url:
+        etree.SubElement(body, "ics_url").text = ics_url
 
     return etree.tostring(root, encoding="unicode", pretty_print=True)
 
@@ -448,6 +671,7 @@ def build_calendar_invite_xml(
     end_datetime: str,
     location: str = "",
     source: str = "frontend",
+    user_id: Optional[str] = None,
 ) -> str:
     """Build a calendar.invite XML message (outgoing from the frontend demo)."""
     root = etree.Element("message", xmlns=XMLNS)
@@ -465,6 +689,8 @@ def build_calendar_invite_xml(
     etree.SubElement(body, "end_datetime").text = end_datetime
     if location:
         etree.SubElement(body, "location").text = location
+    if user_id:
+        etree.SubElement(body, "user_id").text = user_id
 
     return etree.tostring(root, encoding="unicode", pretty_print=True)
 
@@ -475,6 +701,7 @@ def build_calendar_invite_xml(
 
 def parse_message(xml_bytes: bytes) -> Optional[Union[
     CalendarInviteMessage,
+    SessionCreateRequestMessage,
     SessionCreatedMessage,
     SessionUpdatedMessage,
     SessionDeletedMessage,
@@ -502,6 +729,12 @@ def parse_message(xml_bytes: bytes) -> Optional[Union[
             return parse_session_updated(xml_bytes)
         elif msg_type == "session_deleted":
             return parse_session_deleted(xml_bytes)
+        elif msg_type == "session_create_request":
+            return parse_session_create_request(xml_bytes)
+        elif msg_type == "session_update_request":
+            return parse_session_update_request(xml_bytes)
+        elif msg_type == "session_delete_request":
+            return parse_session_delete_request(xml_bytes)
         elif msg_type == "session_view_request":
             return parse_session_view_request(xml_bytes)
         else:

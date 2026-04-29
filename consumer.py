@@ -1,7 +1,9 @@
 """
 Planning service consumer.
 Listens on RabbitMQ for incoming messages and routes them to appropriate handlers.
-Supports: calendar.invite, session_created, session_updated, session_deleted, session_view_request
+Supports: calendar.invite, session_created, session_updated, session_deleted,
+          session_create_request, session_update_request, session_delete_request,
+          session_view_request
 """
 
 import json
@@ -12,9 +14,11 @@ import threading
 import time
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from urllib.parse import urlparse, parse_qs
 from dotenv import load_dotenv
 from lxml import etree
 
+load_dotenv(".env.local", override=True)
 load_dotenv()
 
 from xml_handlers import parse_message
@@ -23,6 +27,9 @@ from xml_models import (
     SessionCreatedMessage,
     SessionUpdatedMessage,
     SessionDeletedMessage,
+    SessionCreateRequestMessage,
+    SessionUpdateRequestMessage,
+    SessionDeleteRequestMessage,
     SessionViewRequestMessage,
 )
 from calendar_service import (
@@ -31,6 +38,7 @@ from calendar_service import (
     CalendarInviteService,
     SessionEventService,
     SessionViewRequestService,
+    IcsFeedService,
 )
 from graph_service import GraphService
 from token_service import TokenService
@@ -48,6 +56,9 @@ RABBITMQ_VHOST = os.getenv("RABBITMQ_VHOST", "/")
 # Shared secret Drupal must send as "Authorization: Bearer <value>"
 _API_TOKEN_SECRET = os.getenv("API_TOKEN_SECRET", "")
 
+# Base URL used when building ICS feed links for non-Outlook users
+_ICS_BASE_URL = os.getenv("ICS_BASE_URL", "http://localhost:30050")
+
 # Exchange and queue configuration
 CALENDAR_EXCHANGE = os.getenv("CALENDAR_EXCHANGE", "calendar.exchange")
 PLANNING_EXCHANGE = os.getenv("PLANNING_EXCHANGE", "planning.exchange")
@@ -55,8 +66,8 @@ CALENDAR_QUEUE = "planning.calendar.invite"
 SESSION_QUEUE = "planning.session.events"
 
 # Route keys to listen on
-CALENDAR_ROUTING_KEY = "calendar.invite"
-SESSION_ROUTING_KEYS = ["planning.session.#"]  # All session events
+CALENDAR_ROUTING_KEY = "frontend.to.planning.calendar.invite"
+SESSION_ROUTING_KEYS = ["frontend.to.planning.session.#"]
 
 
 def _require_env(name: str, value: str | None) -> str:
@@ -100,7 +111,7 @@ def handle_calendar_invite(msg: CalendarInviteMessage, channel, delivery_tag):
             location=msg.body.location or "",
         )
 
-        # Store calendar invite
+        # Store calendar invite (with user_id so the ICS feed can query it)
         CalendarInviteService.create(
             message_id=msg.header.message_id,
             timestamp=msg.header.timestamp,
@@ -111,12 +122,13 @@ def handle_calendar_invite(msg: CalendarInviteMessage, channel, delivery_tag):
             start_datetime=msg.body.start_datetime,
             end_datetime=msg.body.end_datetime,
             location=msg.body.location or "",
+            user_id=msg.body.user_id or None,
         )
 
         # Update message log
         MessageLog.update_message_status(msg.header.message_id, "processed")
 
-        # Create Outlook event (non-blocking — failure is logged, not nacked)
+        # Sync to Outlook — only for users with a registered token
         GraphService.sync_created(
             session_id=msg.body.session_id,
             title=msg.body.title,
@@ -126,12 +138,33 @@ def handle_calendar_invite(msg: CalendarInviteMessage, channel, delivery_tag):
             user_id=msg.body.user_id or None,
         )
 
-        # Confirm enrollment back to Frontend
+        # For non-Outlook users: ensure an ICS feed record exists and build the URL
+        ics_url = None
+        if msg.body.user_id:
+            try:
+                has_outlook_token = bool(TokenService.get_valid_token(msg.body.user_id))
+            except Exception:
+                has_outlook_token = False
+            if not has_outlook_token:
+                feed = IcsFeedService.get_or_create(msg.body.user_id)
+                if feed:
+                    ics_url = (
+                        f"{_ICS_BASE_URL}/ical/{msg.body.user_id}"
+                        f"?token={feed['feed_token']}"
+                    )
+                    logger.info(
+                        "ICS feed URL generated | user_id=%s | url=%s",
+                        msg.body.user_id,
+                        ics_url,
+                    )
+
+        # Confirm enrollment back to Frontend (ics_url is None for Outlook users)
         publish_calendar_invite_confirmed(
             session_id=msg.body.session_id,
             original_message_id=msg.header.message_id,
             status="confirmed",
             correlation_id=msg.header.correlation_id,
+            ics_url=ics_url,
         )
 
         logger.info("calendar.invite processed successfully | message_id=%s", msg.header.message_id)
@@ -325,6 +358,203 @@ def handle_session_deleted(msg: SessionDeletedMessage, channel, delivery_tag):
         channel.basic_nack(delivery_tag=delivery_tag, requeue=False)
 
 
+def handle_session_update_request(msg: SessionUpdateRequestMessage, channel, delivery_tag):
+    """Handle session_update_request from Drupal/frontend: update DB + sync Graph + publish event."""
+    try:
+        logger.info(
+            "Handling session_update_request | message_id=%s | session_id=%s",
+            msg.header.message_id, msg.body.session_id,
+        )
+
+        if not MessageLog.log_message(
+            msg.header.message_id, "session_update_request",
+            msg.header.source, msg.header.timestamp,
+            correlation_id=msg.header.correlation_id,
+        ):
+            logger.warning("Duplicate session_update_request: %s", msg.header.message_id)
+            channel.basic_ack(delivery_tag=delivery_tag)
+            return
+
+        SessionService.create_or_update(
+            session_id=msg.body.session_id,
+            title=msg.body.title,
+            start_datetime=msg.body.start_datetime,
+            end_datetime=msg.body.end_datetime,
+            location=msg.body.location or "",
+            session_type=msg.body.session_type or "keynote",
+            status=msg.body.status or "published",
+            max_attendees=msg.body.max_attendees or 0,
+        )
+
+        SessionEventService.log_event(
+            message_id=msg.header.message_id,
+            timestamp=msg.header.timestamp,
+            source=msg.header.source,
+            event_type="session_update_request",
+            session_id=msg.body.session_id,
+            version=msg.header.version or "1.0",
+            correlation_id=msg.header.correlation_id,
+            event_data={"title": msg.body.title},
+        )
+
+        MessageLog.update_message_status(msg.header.message_id, "processed")
+
+        GraphService.sync_updated(
+            session_id=msg.body.session_id,
+            title=msg.body.title,
+            start_datetime=msg.body.start_datetime,
+            end_datetime=msg.body.end_datetime,
+            location=msg.body.location or "",
+        )
+
+        from producer import publish_session_updated
+        publish_session_updated(
+            session_id=msg.body.session_id,
+            title=msg.body.title,
+            start_datetime=msg.body.start_datetime,
+            end_datetime=msg.body.end_datetime,
+            location=msg.body.location or "",
+            session_type=msg.body.session_type or "keynote",
+            status=msg.body.status or "published",
+            max_attendees=msg.body.max_attendees or 0,
+            correlation_id=msg.header.correlation_id,
+        )
+
+        logger.info("session_update_request processed | message_id=%s", msg.header.message_id)
+        channel.basic_ack(delivery_tag=delivery_tag)
+
+    except Exception as e:
+        logger.error("Error handling session_update_request: %s", e, exc_info=True)
+        MessageLog.update_message_status(msg.header.message_id, "failed", str(e))
+        channel.basic_nack(delivery_tag=delivery_tag, requeue=False)
+
+
+def handle_session_create_request(msg: SessionCreateRequestMessage, channel, delivery_tag):
+    """Handle session_create_request from Drupal/frontend: create DB record + publish event."""
+    try:
+        logger.info(
+            "Handling session_create_request | message_id=%s | session_id=%s",
+            msg.header.message_id,
+            msg.body.session_id,
+        )
+
+        if not MessageLog.log_message(
+            msg.header.message_id,
+            "session_create_request",
+            msg.header.source,
+            msg.header.timestamp,
+            correlation_id=msg.header.correlation_id,
+        ):
+            logger.warning("Duplicate session_create_request: %s", msg.header.message_id)
+            channel.basic_ack(delivery_tag=delivery_tag)
+            return
+
+        SessionService.create_or_update(
+            session_id=msg.body.session_id,
+            title=msg.body.title,
+            start_datetime=msg.body.start_datetime,
+            end_datetime=msg.body.end_datetime,
+            location=msg.body.location or "",
+            session_type=msg.body.session_type or "keynote",
+            status=msg.body.status or "published",
+            max_attendees=msg.body.max_attendees or 0,
+            current_attendees=0,
+        )
+
+        SessionEventService.log_event(
+            message_id=msg.header.message_id,
+            timestamp=msg.header.timestamp,
+            source=msg.header.source,
+            event_type="session_create_request",
+            session_id=msg.body.session_id,
+            version=msg.header.version or "1.0",
+            correlation_id=msg.header.correlation_id,
+            event_data={"title": msg.body.title},
+        )
+
+        MessageLog.update_message_status(msg.header.message_id, "processed")
+
+        from producer import publish_session_created
+        publish_session_created(
+            session_id=msg.body.session_id,
+            title=msg.body.title,
+            start_datetime=msg.body.start_datetime,
+            end_datetime=msg.body.end_datetime,
+            location=msg.body.location or "",
+            session_type=msg.body.session_type or "keynote",
+            status=msg.body.status or "published",
+            max_attendees=msg.body.max_attendees or 0,
+            current_attendees=0,
+            correlation_id=msg.header.correlation_id,
+        )
+
+        logger.info("session_create_request processed | message_id=%s", msg.header.message_id)
+        channel.basic_ack(delivery_tag=delivery_tag)
+
+    except Exception as e:
+        logger.error("Error handling session_create_request: %s", e, exc_info=True)
+        MessageLog.update_message_status(msg.header.message_id, "failed", str(e))
+        channel.basic_nack(delivery_tag=delivery_tag, requeue=False)
+
+
+def handle_session_delete_request(msg: SessionDeleteRequestMessage, channel, delivery_tag):
+    """Handle session_delete_request from Drupal/frontend: delete in DB + cancel Graph + publish event."""
+    try:
+        logger.info(
+            "Handling session_delete_request | message_id=%s | session_id=%s",
+            msg.header.message_id, msg.body.session_id,
+        )
+
+        if not MessageLog.log_message(
+            msg.header.message_id, "session_delete_request",
+            msg.header.source, msg.header.timestamp,
+            correlation_id=msg.header.correlation_id,
+        ):
+            logger.warning("Duplicate session_delete_request: %s", msg.header.message_id)
+            channel.basic_ack(delivery_tag=delivery_tag)
+            return
+
+        SessionService.delete(
+            session_id=msg.body.session_id,
+            reason=msg.body.reason or "",
+            deleted_by=msg.header.source or "frontend",
+        )
+
+        SessionEventService.log_event(
+            message_id=msg.header.message_id,
+            timestamp=msg.header.timestamp,
+            source=msg.header.source,
+            event_type="session_delete_request",
+            session_id=msg.body.session_id,
+            version=msg.header.version or "1.0",
+            correlation_id=msg.header.correlation_id,
+            event_data={"reason": msg.body.reason},
+        )
+
+        MessageLog.update_message_status(msg.header.message_id, "processed")
+
+        GraphService.sync_deleted(
+            session_id=msg.body.session_id,
+            reason=msg.body.reason or "Session cancelled",
+        )
+
+        from producer import publish_session_deleted
+        publish_session_deleted(
+            session_id=msg.body.session_id,
+            reason=msg.body.reason or "",
+            deleted_by=msg.header.source or "frontend",
+            correlation_id=msg.header.correlation_id,
+        )
+
+        logger.info("session_delete_request processed | message_id=%s", msg.header.message_id)
+        channel.basic_ack(delivery_tag=delivery_tag)
+
+    except Exception as e:
+        logger.error("Error handling session_delete_request: %s", e, exc_info=True)
+        MessageLog.update_message_status(msg.header.message_id, "failed", str(e))
+        channel.basic_nack(delivery_tag=delivery_tag, requeue=False)
+
+
 def handle_session_view_request(msg: SessionViewRequestMessage, channel, delivery_tag):
     """Handle session_view_request message."""
     try:
@@ -380,6 +610,12 @@ def route_message(msg, channel, delivery_tag):
         handle_session_updated(msg, channel, delivery_tag)
     elif isinstance(msg, SessionDeletedMessage):
         handle_session_deleted(msg, channel, delivery_tag)
+    elif isinstance(msg, SessionCreateRequestMessage):
+        handle_session_create_request(msg, channel, delivery_tag)
+    elif isinstance(msg, SessionUpdateRequestMessage):
+        handle_session_update_request(msg, channel, delivery_tag)
+    elif isinstance(msg, SessionDeleteRequestMessage):
+        handle_session_delete_request(msg, channel, delivery_tag)
     elif isinstance(msg, SessionViewRequestMessage):
         handle_session_view_request(msg, channel, delivery_tag)
     else:
@@ -529,9 +765,54 @@ def start_health_server(port: int = 30050):
             self.wfile.write(encoded)
 
         def do_GET(self):
+            parsed = urlparse(self.path)
+            if parsed.path.startswith("/ical/"):
+                self._handle_ics_feed(parsed)
+            else:
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b"ok")
+
+        def _handle_ics_feed(self, parsed):
+            """
+            GET /ical/{user_id}?token={feed_token}
+
+            Returns an RFC 5545 iCalendar file the user can subscribe to from
+            any calendar application.  Replace http:// with webcal:// in the
+            URL to trigger a direct subscription in apps that support it.
+            """
+            from ics_service import build_ics
+
+            path_parts = parsed.path.strip("/").split("/")
+            # Expect exactly ["ical", "<user_id>"]
+            if len(path_parts) != 2 or not path_parts[1]:
+                self.send_response(404)
+                self.end_headers()
+                return
+
+            user_id = path_parts[1]
+            params = parse_qs(parsed.query)
+            token = params.get("token", [None])[0]
+
+            if not token or not IcsFeedService.validate_token(user_id, token):
+                self.send_response(401)
+                self.send_header("Content-Type", "text/plain")
+                self.end_headers()
+                self.wfile.write(b"Unauthorized")
+                return
+
+            sessions = IcsFeedService.get_user_sessions(user_id)
+            ics_bytes = build_ics(sessions, calendar_name=f"Planning – {user_id}")
+
             self.send_response(200)
+            self.send_header("Content-Type", "text/calendar; charset=utf-8")
+            self.send_header(
+                "Content-Disposition",
+                f'attachment; filename="planning-{user_id}.ics"',
+            )
+            self.send_header("Content-Length", str(len(ics_bytes)))
             self.end_headers()
-            self.wfile.write(b"ok")
+            self.wfile.write(ics_bytes)
 
         def do_POST(self):
             if self.path == "/api/tokens":
@@ -568,8 +849,8 @@ def start_health_server(port: int = 30050):
                 refresh_token = data.get("refresh_token", "").strip()
                 expires_in = int(data.get("expires_in", 3600))
 
-                if not all([user_id, access_token, refresh_token]):
-                    self._json_response(400, {"error": "user_id, access_token and refresh_token are required"})
+                if not all([user_id, access_token]):
+                    self._json_response(400, {"error": "user_id and access_token are required"})
                     return
 
                 expires_at = datetime.now(tz=timezone.utc).replace(microsecond=0)

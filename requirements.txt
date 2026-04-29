@@ -6,6 +6,7 @@ msal>=1.28.0
 requests>=2.31.0
 flask>=3.0.0
 cryptography>=42.0.0
+icalendar>=5.0.0
 
 # Testing
 pytest>=7.0.0

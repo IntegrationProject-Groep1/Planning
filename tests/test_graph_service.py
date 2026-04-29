@@ -38,6 +38,7 @@ class TestSyncCreated:
             start_datetime="2026-05-15T14:00:00Z",
             end_datetime="2026-05-15T15:00:00Z",
             location="Aula A",
+            user_id="user-001",
         )
 
         assert result is True
@@ -48,7 +49,7 @@ class TestSyncCreated:
             end_datetime="2026-05-15T15:00:00Z",
             location="Aula A",
         )
-        mock_upsert.assert_called_once_with("sess-001", "evt-001", status="synced")
+        mock_upsert.assert_called_once_with("sess-001", "user-001", "evt-001", status="synced")
 
     def test_graph_api_failure_marks_sync_failed(self, mocker):
         """sync_created returns False and records failure when Graph API fails."""
@@ -62,10 +63,25 @@ class TestSyncCreated:
             title="Test",
             start_datetime="2026-05-15T14:00:00Z",
             end_datetime="2026-05-15T15:00:00Z",
+            user_id="user-001",
         )
 
         assert result is False
-        mock_fail.assert_called_once_with("sess-001", "403 Forbidden")
+        mock_fail.assert_called_once_with("sess-001", "user-001", "403 Forbidden")
+
+    def test_returns_false_when_no_user_id(self, mocker):
+        """sync_created returns False immediately when user_id is absent."""
+        mock_build = mocker.patch("graph_service._build_client")
+
+        result = GraphService.sync_created(
+            session_id="sess-001",
+            title="Test",
+            start_datetime="2026-05-15T14:00:00Z",
+            end_datetime="2026-05-15T15:00:00Z",
+        )
+
+        assert result is False
+        mock_build.assert_not_called()
 
     def test_returns_false_when_graph_not_configured(self, mocker):
         """sync_created returns False gracefully when credentials are absent."""
@@ -76,6 +92,7 @@ class TestSyncCreated:
             title="Test",
             start_datetime="2026-05-15T14:00:00Z",
             end_datetime="2026-05-15T15:00:00Z",
+            user_id="user-001",
         )
 
         assert result is False
@@ -92,6 +109,7 @@ class TestSyncCreated:
             title="Test",
             start_datetime="2026-05-15T14:00:00Z",
             end_datetime="2026-05-15T15:00:00Z",
+            user_id="user-001",
         )
 
         assert result is False
@@ -103,6 +121,13 @@ class TestSyncCreated:
 # ---------------------------------------------------------------------------
 
 class TestSyncUpdated:
+    @pytest.fixture(autouse=True)
+    def mock_outlook_users(self, mocker):
+        return mocker.patch(
+            "graph_service._get_outlook_users_for_session",
+            return_value=["user-001"],
+        )
+
     def test_updates_existing_event(self, mocker):
         """sync_updated calls update_event when a synced event exists."""
         mock_client = MagicMock()
@@ -126,7 +151,7 @@ class TestSyncUpdated:
             end_datetime="2026-05-15T15:30:00Z",
             location="Room B",
         )
-        mock_upsert.assert_called_once_with("sess-001", "evt-001", status="synced")
+        mock_upsert.assert_called_once_with("sess-001", "user-001", "evt-001", status="synced")
 
     def test_falls_back_to_create_when_no_event_found(self, mocker):
         """sync_updated falls back to sync_created when no event exists in DB."""
@@ -147,6 +172,19 @@ class TestSyncUpdated:
         assert result is True
         mock_sync_created.assert_called_once()
 
+    def test_no_users_returns_true(self, mocker, mock_outlook_users):
+        """sync_updated returns True immediately when no Outlook users exist."""
+        mock_outlook_users.return_value = []
+
+        result = GraphService.sync_updated(
+            session_id="sess-001",
+            title="Test",
+            start_datetime="2026-05-15T14:00:00Z",
+            end_datetime="2026-05-15T15:00:00Z",
+        )
+
+        assert result is True
+
     def test_graph_api_failure_marks_sync_failed(self, mocker):
         mock_client = MagicMock()
         mock_client.update_event.side_effect = GraphClientError("500 error")
@@ -162,7 +200,7 @@ class TestSyncUpdated:
         )
 
         assert result is False
-        mock_fail.assert_called_once_with("sess-001", "500 error")
+        mock_fail.assert_called_once_with("sess-001", "user-001", "500 error")
 
     def test_returns_false_when_graph_not_configured(self, mocker):
         mocker.patch("graph_service._build_client", return_value=None)
@@ -182,6 +220,13 @@ class TestSyncUpdated:
 # ---------------------------------------------------------------------------
 
 class TestSyncDeleted:
+    @pytest.fixture(autouse=True)
+    def mock_outlook_users(self, mocker):
+        return mocker.patch(
+            "graph_service._get_outlook_users_for_session",
+            return_value=["user-001"],
+        )
+
     def test_cancels_existing_event(self, mocker):
         """sync_deleted calls cancel_event and marks sync as deleted."""
         mock_client = MagicMock()
@@ -199,7 +244,7 @@ class TestSyncDeleted:
             event_id="evt-001",
             comment="Session cancelled by admin",
         )
-        mock_mark_deleted.assert_called_once_with("sess-001")
+        mock_mark_deleted.assert_called_once_with("sess-001", "user-001")
 
     def test_no_op_when_no_event_found(self, mocker):
         """sync_deleted is a no-op (returns True) when no event exists."""
@@ -212,6 +257,14 @@ class TestSyncDeleted:
         assert result is True
         mock_client.cancel_event.assert_not_called()
 
+    def test_no_users_returns_true(self, mocker, mock_outlook_users):
+        """sync_deleted returns True immediately when no Outlook users exist."""
+        mock_outlook_users.return_value = []
+
+        result = GraphService.sync_deleted(session_id="sess-001")
+
+        assert result is True
+
     def test_graph_api_failure_marks_sync_failed(self, mocker):
         mock_client = MagicMock()
         mock_client.cancel_event.side_effect = GraphClientError("403 error")
@@ -222,7 +275,7 @@ class TestSyncDeleted:
         result = GraphService.sync_deleted(session_id="sess-001")
 
         assert result is False
-        mock_fail.assert_called_once_with("sess-001", "403 error")
+        mock_fail.assert_called_once_with("sess-001", "user-001", "403 error")
 
     def test_returns_false_when_graph_not_configured(self, mocker):
         mocker.patch("graph_service._build_client", return_value=None)
@@ -267,12 +320,10 @@ class TestConsumerGraphIntegration:
         mocker.patch("consumer.SessionService.create_or_update")
         mocker.patch("consumer.CalendarInviteService.create")
         mocker.patch("consumer.MessageLog.update_message_status")
-        # Graph API fails
         mocker.patch("consumer.GraphService.sync_created", return_value=False)
 
         mock_channel = MagicMock()
         handle_calendar_invite(msg, mock_channel, delivery_tag=1)
 
-        # Message must still be ACKed
         mock_channel.basic_ack.assert_called_once_with(delivery_tag=1)
         mock_channel.basic_nack.assert_not_called()

@@ -328,6 +328,7 @@ class CalendarInviteService:
         end_datetime: str,
         location: str = "",
         status: str = "pending",
+        user_id: Optional[str] = None,
     ) -> bool:
         """
         Insert a calendar invite into the database.
@@ -347,8 +348,8 @@ class CalendarInviteService:
 
             query = """
             INSERT INTO calendar_invites
-            (message_id, timestamp, source, type, session_id, title, start_datetime, end_datetime, location, status)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            (message_id, timestamp, source, type, session_id, title, start_datetime, end_datetime, location, status, user_id)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """
 
             cursor.execute(
@@ -364,6 +365,7 @@ class CalendarInviteService:
                     end_datetime,
                     location,
                     status,
+                    user_id,
                 ),
             )
 
@@ -670,4 +672,91 @@ class SessionViewRequestService:
 
         except psycopg2.Error as e:
             logger.error("Database error while retrieving pending view requests: %s", e)
+            return []
+
+
+# ============================================================================
+# ICS FEEDS (per-user iCalendar subscription management)
+# ============================================================================
+
+class IcsFeedService:
+    """
+    Manages ICS feed tokens for non-Outlook users.
+
+    One row per user in ics_feeds:
+      - feed_token: secret UUID that protects the /ical/{user_id}?token=... URL
+    """
+
+    @staticmethod
+    def get_or_create(user_id: str) -> Optional[Dict]:
+        """Return an existing feed record or create a new one."""
+        try:
+            conn = _get_connection()
+            cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
+            cursor.execute(
+                "INSERT INTO ics_feeds (user_id) VALUES (%s) ON CONFLICT (user_id) DO NOTHING",
+                (user_id,),
+            )
+            conn.commit()
+            cursor.execute(
+                "SELECT user_id, feed_token::text FROM ics_feeds WHERE user_id = %s",
+                (user_id,),
+            )
+            row = cursor.fetchone()
+            cursor.close()
+            conn.close()
+            return dict(row) if row else None
+        except psycopg2.Error as e:
+            logger.error("IcsFeedService.get_or_create failed | user_id=%s | error=%s", user_id, e)
+            return None
+
+    @staticmethod
+    def validate_token(user_id: str, feed_token: str) -> bool:
+        """Return True if feed_token matches the stored token for user_id."""
+        try:
+            conn = _get_connection()
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT 1 FROM ics_feeds WHERE user_id = %s AND feed_token::text = %s",
+                (user_id, feed_token),
+            )
+            row = cursor.fetchone()
+            cursor.close()
+            conn.close()
+            return row is not None
+        except psycopg2.Error as e:
+            logger.error("IcsFeedService.validate_token failed | user_id=%s | error=%s", user_id, e)
+            return False
+
+    @staticmethod
+    def get_user_sessions(user_id: str) -> List[Dict]:
+        """
+        Return all active sessions this user has been invited to, ordered by start time.
+        Joins calendar_invites.user_id → sessions.
+        """
+        try:
+            conn = _get_connection()
+            cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
+            cursor.execute(
+                """
+                SELECT DISTINCT
+                    s.session_id,
+                    s.title,
+                    s.start_datetime,
+                    s.end_datetime,
+                    s.location
+                FROM sessions s
+                INNER JOIN calendar_invites ci ON ci.session_id = s.session_id
+                WHERE ci.user_id = %s
+                  AND s.is_deleted = FALSE
+                ORDER BY s.start_datetime
+                """,
+                (user_id,),
+            )
+            rows = cursor.fetchall()
+            cursor.close()
+            conn.close()
+            return [dict(row) for row in rows]
+        except psycopg2.Error as e:
+            logger.error("IcsFeedService.get_user_sessions failed | user_id=%s | error=%s", user_id, e)
             return []

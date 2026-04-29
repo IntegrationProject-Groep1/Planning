@@ -32,6 +32,31 @@ def sample_calendar_invite_xml():
 
 
 @pytest.fixture
+def sample_session_create_request_xml():
+    """Sample session_create_request XML message."""
+    return b"""<message xmlns="urn:integration:planning:v1">
+        <header>
+            <message_id>msg-005</message_id>
+            <timestamp>2026-05-15T08:30:00Z</timestamp>
+            <source>frontend</source>
+            <type>session_create_request</type>
+            <version>1.0</version>
+            <correlation_id>corr-000</correlation_id>
+        </header>
+        <body>
+            <session_id>sess-000</session_id>
+            <title>Brand New Session</title>
+            <start_datetime>2026-05-15T12:00:00Z</start_datetime>
+            <end_datetime>2026-05-15T13:00:00Z</end_datetime>
+            <location>Room B</location>
+            <session_type>workshop</session_type>
+            <status>published</status>
+            <max_attendees>80</max_attendees>
+        </body>
+    </message>"""
+
+
+@pytest.fixture
 def sample_session_created_xml():
     """Sample session_created XML message."""
     return b"""<message xmlns="urn:integration:planning:v1">

@@ -24,6 +24,7 @@ from xml_handlers import (
 from xsd_validator import validate_xml
 
 # Load environment variables
+load_dotenv(".env.local", override=True)
 load_dotenv()
 
 # Setup logging
@@ -174,12 +175,13 @@ def publish_calendar_invite_confirmed(
     original_message_id: str,
     status: str = "confirmed",
     correlation_id: str = None,
+    ics_url: str = None,
 ) -> bool:
     """
     Publish calendar.invite.confirmed response to Frontend.
 
-    Called after a calendar.invite is successfully processed and the
-    Outlook event is created. Lets Frontend know the enrollment was confirmed.
+    For non-Outlook users *ics_url* is included in the body so the Frontend
+    can display the iCalendar subscription link to the user.
 
     Returns True on success, False on failure.
     """
@@ -189,11 +191,12 @@ def publish_calendar_invite_confirmed(
             original_message_id=original_message_id,
             status=status,
             correlation_id=correlation_id,
+            ics_url=ics_url,
         )
 
         logger.info("Built XML for calendar.invite.confirmed:\n%s", xml_message)
         return _publish_with_validation_and_retry(
-            xml_message, "planning.calendar.invite.confirmed", "calendar.invite.confirmed"
+            xml_message, "planning.to.frontend.calendar.invite.confirmed", "calendar.invite.confirmed"
         )
 
     except Exception as e:
@@ -234,7 +237,7 @@ def publish_session_created(
 
         logger.info("Built XML for session_created:\n%s", xml_message)
         return _publish_with_validation_and_retry(
-            xml_message, "planning.session.created", "session_created"
+            xml_message, "planning.to.frontend.session.created", "session_created"
         )
 
     except Exception as e:
@@ -275,7 +278,7 @@ def publish_session_updated(
 
         logger.info("Built XML for session_updated:\n%s", xml_message)
         return _publish_with_validation_and_retry(
-            xml_message, "planning.session.updated", "session_updated"
+            xml_message, "planning.to.frontend.session.updated", "session_updated"
         )
 
     except Exception as e:
@@ -304,7 +307,7 @@ def publish_session_deleted(
 
         logger.info("Built XML for session_deleted:\n%s", xml_message)
         return _publish_with_validation_and_retry(
-            xml_message, "planning.session.deleted", "session_deleted"
+            xml_message, "planning.to.frontend.session.deleted", "session_deleted"
         )
 
     except Exception as e:
@@ -345,7 +348,7 @@ def publish_session_view_response(
 
         logger.info("Built XML for session_view_response:\n%s", xml_message)
         return _publish_with_validation_and_retry(
-            xml_message, "planning.session.view_response", "session_view_response"
+            xml_message, "planning.to.frontend.session.view.response", "session_view_response"
         )
 
     except Exception as e:

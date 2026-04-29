@@ -1,20 +1,17 @@
 """
 Graph service — orchestrates Microsoft Graph API calls with DB sync tracking.
 
-Responsibilities:
-  - Call graph_client.GraphClient for Outlook calendar operations.
-  - Persist the session_id ↔ Graph event_id mapping in the graph_sync table.
-  - Mark syncs as failed with an error message when Graph API calls fail.
-  - Degrade gracefully when Graph API credentials are not configured
-    (logs a warning instead of crashing the consumer).
+Each (session_id, user_id) pair gets its own row in graph_sync because every
+user's Outlook calendar holds a separate copy of the event with a unique
+Graph event_id.
 
-This module is the only layer that should interact with both graph_client
-and the graph_sync table.  consumer.py calls this service — it never calls
-graph_client directly.
+When a session is updated or deleted the service looks up all subscribed users
+from calendar_invites, retrieves each user's token, and patches/cancels their
+individual Outlook event.
 """
 
 import logging
-from typing import Optional
+from typing import List, Optional
 
 import psycopg2
 from psycopg2.extras import DictCursor
@@ -25,10 +22,6 @@ from token_service import TokenService
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Database helpers (reuses the same DB env vars as calendar_service.py)
-# ---------------------------------------------------------------------------
-
 _DB_URL: Optional[str] = get_database_url()
 
 
@@ -37,121 +30,130 @@ def _get_conn():
 
 
 # ---------------------------------------------------------------------------
-# graph_sync DB helpers
+# graph_sync DB helpers  (keyed on session_id + user_id)
 # ---------------------------------------------------------------------------
 
-def _upsert_sync(session_id: str, event_id: str, status: str = "synced") -> None:
-    """Insert or update a graph_sync record for the given session."""
+def _upsert_sync(session_id: str, user_id: str, event_id: str, status: str = "synced") -> None:
     with _get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
                 INSERT INTO graph_sync
-                    (session_id, graph_event_id, sync_status, last_synced_at)
-                VALUES (%s, %s, %s, NOW())
-                ON CONFLICT (session_id) DO UPDATE SET
+                    (session_id, user_id, graph_event_id, sync_status, last_synced_at)
+                VALUES (%s, %s, %s, %s, NOW())
+                ON CONFLICT (session_id, user_id) DO UPDATE SET
                     graph_event_id = EXCLUDED.graph_event_id,
                     sync_status    = EXCLUDED.sync_status,
                     last_synced_at = NOW(),
                     error_message  = NULL
                 """,
-                (session_id, event_id, status),
+                (session_id, user_id, event_id, status),
             )
 
 
-def _mark_sync_failed(session_id: str, error: str) -> None:
-    """Record a sync failure so it can be retried later."""
+def _mark_sync_failed(session_id: str, user_id: str, error: str) -> None:
     try:
         with _get_conn() as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     """
                     INSERT INTO graph_sync
-                        (session_id, graph_event_id, sync_status, error_message, last_synced_at)
-                    VALUES (%s, NULL, 'failed', %s, NOW())
-                    ON CONFLICT (session_id) DO UPDATE SET
+                        (session_id, user_id, graph_event_id, sync_status, error_message, last_synced_at)
+                    VALUES (%s, %s, NULL, 'failed', %s, NOW())
+                    ON CONFLICT (session_id, user_id) DO UPDATE SET
                         sync_status   = 'failed',
                         error_message = EXCLUDED.error_message,
                         last_synced_at = NOW()
                     """,
-                    (session_id, error),
+                    (session_id, user_id, error),
                 )
-    except Exception as db_exc:
-        logger.warning("Could not persist sync failure for session_id=%s: %s", session_id, db_exc)
+    except Exception as exc:
+        logger.warning(
+            "Could not persist sync failure | session_id=%s | user_id=%s | error=%s",
+            session_id, user_id, exc,
+        )
 
 
-def _get_event_id(session_id: str) -> Optional[str]:
-    """Return the Graph event ID for a synced session, or None if not found."""
+def _get_event_id(session_id: str, user_id: str) -> Optional[str]:
+    """Return the Graph event_id for a specific (session, user) pair."""
     with _get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 "SELECT graph_event_id FROM graph_sync "
-                "WHERE session_id = %s AND sync_status = 'synced'",
-                (session_id,),
+                "WHERE session_id = %s AND user_id = %s AND sync_status = 'synced'",
+                (session_id, user_id),
             )
             row = cur.fetchone()
             return row["graph_event_id"] if row else None
 
 
-def _mark_sync_deleted(session_id: str) -> None:
+def _mark_sync_deleted(session_id: str, user_id: str) -> None:
     with _get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 "UPDATE graph_sync SET sync_status = 'deleted', last_synced_at = NOW() "
-                "WHERE session_id = %s",
+                "WHERE session_id = %s AND user_id = %s",
+                (session_id, user_id),
+            )
+
+
+def _get_outlook_users_for_session(session_id: str) -> List[str]:
+    """
+    Return the user_ids of all users who registered for this session
+    AND have a valid Outlook token stored.
+    """
+    with _get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT DISTINCT ci.user_id
+                FROM calendar_invites ci
+                INNER JOIN user_tokens ut ON ut.user_id = ci.user_id
+                WHERE ci.session_id = %s AND ci.user_id IS NOT NULL
+                """,
                 (session_id,),
             )
+            return [row["user_id"] for row in cur.fetchall()]
+
+
+# ---------------------------------------------------------------------------
+# Client builder
+# ---------------------------------------------------------------------------
+
+def _build_client(user_id: str) -> Optional[GraphClient]:
+    """
+    Build a GraphClient using the stored per-user token.
+    Returns None (and logs a warning) when no valid token is available.
+    """
+    try:
+        access_token = TokenService.get_valid_token(user_id)
+    except Exception as exc:
+        logger.warning(
+            "Could not retrieve token for user_id=%s — Outlook sync disabled: %s",
+            user_id, exc,
+        )
+        return None
+
+    if not access_token:
+        logger.warning(
+            "No token registered for user_id=%s — Outlook sync disabled", user_id
+        )
+        return None
+
+    return GraphClient(access_token=access_token)
 
 
 # ---------------------------------------------------------------------------
 # GraphService — public API used by consumer.py
 # ---------------------------------------------------------------------------
 
-def _build_client(user_id: Optional[str] = None) -> Optional[GraphClient]:
-    """
-    Try to build a GraphClient.
-
-    When *user_id* is given, the per-user token is looked up via TokenService
-    and injected directly — no MSAL file cache is involved.
-
-    Without a user_id the shared service-account cache (auth_setup.py) is used.
-
-    Returns None (and logs a warning) when no valid token can be obtained,
-    so the consumer can continue without crashing.
-    """
-    if user_id:
-        try:
-            access_token = TokenService.get_valid_token(user_id)
-        except Exception as exc:
-            logger.warning(
-                "Could not retrieve token for user_id=%s — Outlook sync disabled: %s",
-                user_id,
-                exc,
-            )
-            return None
-
-        if not access_token:
-            logger.warning(
-                "No token registered for user_id=%s — Outlook sync disabled",
-                user_id,
-            )
-            return None
-
-        return GraphClient(access_token=access_token)
-
-    try:
-        return GraphClient()
-    except GraphClientError as exc:
-        logger.warning(
-            "Graph API not configured — Outlook sync disabled: %s", exc
-        )
-        return None
-
-
 class GraphService:
     """
     Static-method facade for Graph API + sync DB operations.
-    Each method is safe to call even when Graph API is not configured.
+
+    For every Outlook user registered to a session, their event is created,
+    updated, or cancelled individually using their personal token.
+    Non-Outlook users are served by the ICS feed and are not touched here.
     """
 
     @staticmethod
@@ -164,14 +166,12 @@ class GraphService:
         user_id: Optional[str] = None,
     ) -> bool:
         """
-        Create an Outlook event for a new session and persist the mapping.
-
-        When *user_id* is provided the calendar event is created in that user's
-        Outlook calendar using their stored token.  Without it the shared
-        service-account token cache is used.
-
-        Returns True on success, False on failure (failure is logged + stored).
+        Create an Outlook event for user_id and store the (session_id, user_id)
+        mapping.  Returns True on success, False on failure.
         """
+        if not user_id:
+            return False
+
         client = _build_client(user_id)
         if client is None:
             return False
@@ -184,31 +184,27 @@ class GraphService:
                 end_datetime=end_datetime,
                 location=location,
             )
-            _upsert_sync(session_id, event_id, status="synced")
+            _upsert_sync(session_id, user_id, event_id, status="synced")
             logger.info(
-                "Graph sync created | session_id=%s | event_id=%s",
-                session_id,
-                event_id,
+                "Graph sync created | session_id=%s | user_id=%s | event_id=%s",
+                session_id, user_id, event_id,
             )
             return True
 
         except GraphClientError as exc:
             logger.error(
-                "Graph API create_event failed | session_id=%s | error=%s",
-                session_id,
-                exc,
+                "Graph create_event failed | session_id=%s | user_id=%s | error=%s",
+                session_id, user_id, exc,
             )
-            _mark_sync_failed(session_id, str(exc))
+            _mark_sync_failed(session_id, user_id, str(exc))
             return False
 
         except Exception as exc:
             logger.error(
-                "Unexpected error during Graph sync create | session_id=%s | error=%s",
-                session_id,
-                exc,
-                exc_info=True,
+                "Unexpected error during Graph sync create | session_id=%s | user_id=%s | error=%s",
+                session_id, user_id, exc, exc_info=True,
             )
-            _mark_sync_failed(session_id, str(exc))
+            _mark_sync_failed(session_id, user_id, str(exc))
             return False
 
     @staticmethod
@@ -218,119 +214,131 @@ class GraphService:
         start_datetime: str,
         end_datetime: str,
         location: str = "",
-        user_id: Optional[str] = None,
     ) -> bool:
         """
-        Update the Outlook event linked to an existing session.
+        Update the Outlook event for every user subscribed to this session.
 
-        If no synced event is found in the DB, a new event is created instead.
-        Returns True on success, False on failure.
+        Looks up all users with Outlook tokens registered for session_id from
+        calendar_invites, then patches each user's individual event.
+        Returns True if all updates succeeded, False if any failed.
         """
-        client = _build_client(user_id)
-        if client is None:
-            return False
-
-        try:
-            event_id = _get_event_id(session_id)
-            if event_id:
-                client.update_event(
-                    event_id=event_id,
-                    title=title,
-                    start_datetime=start_datetime,
-                    end_datetime=end_datetime,
-                    location=location,
-                )
-                _upsert_sync(session_id, event_id, status="synced")
-                logger.info(
-                    "Graph sync updated | session_id=%s | event_id=%s",
-                    session_id,
-                    event_id,
-                )
-            else:
-                # No prior sync record — create the event instead
-                logger.warning(
-                    "No synced event found for session_id=%s — creating instead of updating",
-                    session_id,
-                )
-                return GraphService.sync_created(
-                    session_id=session_id,
-                    title=title,
-                    start_datetime=start_datetime,
-                    end_datetime=end_datetime,
-                    location=location,
-                    user_id=user_id,
-                )
+        user_ids = _get_outlook_users_for_session(session_id)
+        if not user_ids:
+            logger.info(
+                "No Outlook users found for session_id=%s — skipping Graph update",
+                session_id,
+            )
             return True
 
-        except GraphClientError as exc:
-            logger.error(
-                "Graph API update_event failed | session_id=%s | error=%s",
-                session_id,
-                exc,
-            )
-            _mark_sync_failed(session_id, str(exc))
-            return False
+        all_ok = True
+        for user_id in user_ids:
+            client = _build_client(user_id)
+            if client is None:
+                all_ok = False
+                continue
 
-        except Exception as exc:
-            logger.error(
-                "Unexpected error during Graph sync update | session_id=%s | error=%s",
-                session_id,
-                exc,
-                exc_info=True,
-            )
-            _mark_sync_failed(session_id, str(exc))
-            return False
+            try:
+                event_id = _get_event_id(session_id, user_id)
+                if event_id:
+                    client.update_event(
+                        event_id=event_id,
+                        title=title,
+                        start_datetime=start_datetime,
+                        end_datetime=end_datetime,
+                        location=location,
+                    )
+                    _upsert_sync(session_id, user_id, event_id, status="synced")
+                    logger.info(
+                        "Graph sync updated | session_id=%s | user_id=%s | event_id=%s",
+                        session_id, user_id, event_id,
+                    )
+                else:
+                    # No prior sync record — create the event instead
+                    logger.warning(
+                        "No synced event found for session_id=%s user_id=%s — creating instead",
+                        session_id, user_id,
+                    )
+                    GraphService.sync_created(
+                        session_id=session_id,
+                        title=title,
+                        start_datetime=start_datetime,
+                        end_datetime=end_datetime,
+                        location=location,
+                        user_id=user_id,
+                    )
+
+            except GraphClientError as exc:
+                logger.error(
+                    "Graph update_event failed | session_id=%s | user_id=%s | error=%s",
+                    session_id, user_id, exc,
+                )
+                _mark_sync_failed(session_id, user_id, str(exc))
+                all_ok = False
+
+            except Exception as exc:
+                logger.error(
+                    "Unexpected error during Graph sync update | session_id=%s | user_id=%s | error=%s",
+                    session_id, user_id, exc, exc_info=True,
+                )
+                _mark_sync_failed(session_id, user_id, str(exc))
+                all_ok = False
+
+        return all_ok
 
     @staticmethod
     def sync_deleted(
         session_id: str,
         reason: str = "Session cancelled",
-        user_id: Optional[str] = None,
     ) -> bool:
         """
-        Cancel the Outlook event linked to a deleted session.
-
-        If no synced event is found, the operation is a no-op (returns True).
-        Returns True on success or if there was nothing to cancel.
-        Returns False on Graph API failure.
+        Cancel the Outlook event for every user subscribed to this session.
+        Returns True if all cancellations succeeded (or nothing to cancel).
         """
-        client = _build_client(user_id)
-        if client is None:
-            return False
-
-        try:
-            event_id = _get_event_id(session_id)
-            if not event_id:
-                logger.info(
-                    "No synced event to cancel for session_id=%s — skipping",
-                    session_id,
-                )
-                return True
-
-            client.cancel_event(event_id=event_id, comment=reason)
-            _mark_sync_deleted(session_id)
+        user_ids = _get_outlook_users_for_session(session_id)
+        if not user_ids:
             logger.info(
-                "Graph sync deleted | session_id=%s | event_id=%s",
+                "No Outlook users found for session_id=%s — skipping Graph cancel",
                 session_id,
-                event_id,
             )
             return True
 
-        except GraphClientError as exc:
-            logger.error(
-                "Graph API cancel_event failed | session_id=%s | error=%s",
-                session_id,
-                exc,
-            )
-            _mark_sync_failed(session_id, str(exc))
-            return False
+        all_ok = True
+        for user_id in user_ids:
+            client = _build_client(user_id)
+            if client is None:
+                all_ok = False
+                continue
 
-        except Exception as exc:
-            logger.error(
-                "Unexpected error during Graph sync delete | session_id=%s | error=%s",
-                session_id,
-                exc,
-                exc_info=True,
-            )
-            _mark_sync_failed(session_id, str(exc))
-            return False
+            try:
+                event_id = _get_event_id(session_id, user_id)
+                if not event_id:
+                    logger.info(
+                        "No synced event to cancel | session_id=%s | user_id=%s — skipping",
+                        session_id, user_id,
+                    )
+                    continue
+
+                client.cancel_event(event_id=event_id, comment=reason)
+                _mark_sync_deleted(session_id, user_id)
+                logger.info(
+                    "Graph sync deleted | session_id=%s | user_id=%s | event_id=%s",
+                    session_id, user_id, event_id,
+                )
+
+            except GraphClientError as exc:
+                logger.error(
+                    "Graph cancel_event failed | session_id=%s | user_id=%s | error=%s",
+                    session_id, user_id, exc,
+                )
+                _mark_sync_failed(session_id, user_id, str(exc))
+                all_ok = False
+
+            except Exception as exc:
+                logger.error(
+                    "Unexpected error during Graph sync delete | session_id=%s | user_id=%s | error=%s",
+                    session_id, user_id, exc, exc_info=True,
+                )
+                _mark_sync_failed(session_id, user_id, str(exc))
+                all_ok = False
+
+        return all_ok

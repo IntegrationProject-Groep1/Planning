@@ -20,6 +20,7 @@ _SCHEMA_MAP: dict[str, str] = {
     "session_created": "session_created",
     "session_updated": "session_updated",
     "session_deleted": "session_deleted",
+    "session_create_request": "session_create_request",
     "session_view_request": "session_view_request",
     "session_view_response": "session_view_response",
 }

@@ -17,9 +17,13 @@ import json
 import logging
 import os
 import pathlib
+import sys
 import uuid
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
+
+# Add project root to path so modules in the parent directory are importable
+sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
 
 import requests as _requests
 
@@ -28,9 +32,16 @@ import psycopg2
 from psycopg2.extras import DictCursor
 from dotenv import load_dotenv
 
-from xml_handlers import build_calendar_invite_xml, build_session_updated_xml
+from xml_handlers import (
+    build_calendar_invite_xml,
+    build_session_create_request_xml,
+    build_session_updated_xml,
+    build_session_update_request_xml,
+    build_session_delete_request_xml,
+)
 
-load_dotenv()
+load_dotenv(pathlib.Path(__file__).parent.parent / ".env.local", override=True)
+load_dotenv(pathlib.Path(__file__).parent.parent / ".env")
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +94,30 @@ _RABBIT = dict(
 )
 
 
+_SERVICE_URL = os.getenv("SERVICE_URL", "http://localhost:30050")
+_API_TOKEN_SECRET = os.getenv("API_TOKEN_SECRET", "")
+
+
+def _register_token(user_id: str, access_token: str, expires_in: int = 3600) -> tuple[bool, str]:
+    """Proxy: forward user token to the planning service for Outlook sync."""
+    try:
+        headers = {"Content-Type": "application/json"}
+        if _API_TOKEN_SECRET:
+            headers["Authorization"] = f"Bearer {_API_TOKEN_SECRET}"
+        r = _requests.post(
+            f"{_SERVICE_URL}/api/tokens",
+            json={"user_id": user_id, "access_token": access_token,
+                  "refresh_token": "", "expires_in": expires_in},
+            headers=headers,
+            timeout=5,
+        )
+        if r.ok:
+            return True, ""
+        return False, r.json().get("error", r.text)
+    except Exception as exc:
+        return False, str(exc)
+
+
 # ---------------------------------------------------------------------------
 # DB helpers
 # ---------------------------------------------------------------------------
@@ -96,9 +131,13 @@ def _db_sessions() -> list[dict]:
                     SELECT s.session_id, s.title, s.start_datetime, s.end_datetime,
                            s.location, s.session_type, s.status,
                            s.max_attendees, s.current_attendees,
-                           COALESCE(gs.sync_status, 'not_synced') AS outlook_status
+                           COALESCE(
+                               (SELECT gs.sync_status FROM graph_sync gs
+                                WHERE gs.session_id = s.session_id
+                                LIMIT 1),
+                               'not_synced'
+                           ) AS outlook_status
                     FROM sessions s
-                    LEFT JOIN graph_sync gs ON gs.session_id = s.session_id
                     WHERE s.is_deleted = FALSE
                     ORDER BY s.start_datetime ASC
                     LIMIT 20
@@ -107,6 +146,27 @@ def _db_sessions() -> list[dict]:
                 return [dict(r) for r in cur.fetchall()]
     except Exception as exc:
         logger.warning("DB read failed: %s", exc)
+        return []
+
+
+def _db_ics_feeds() -> list[dict]:
+    """Return all ICS feed records with their user sessions count."""
+    try:
+        with psycopg2.connect(_DB_URL, cursor_factory=DictCursor, connect_timeout=3) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT f.user_id, f.feed_token::text,
+                           COUNT(ci.session_id) AS session_count
+                    FROM ics_feeds f
+                    LEFT JOIN calendar_invites ci ON ci.user_id = f.user_id
+                    GROUP BY f.user_id, f.feed_token
+                    ORDER BY f.user_id
+                    """
+                )
+                return [dict(r) for r in cur.fetchall()]
+    except Exception as exc:
+        logger.warning("DB ics_feeds read failed: %s", exc)
         return []
 
 
@@ -168,6 +228,13 @@ def _rabbit_publish(exchange: str, routing_key: str, xml: str) -> bool:
         conn = pika.BlockingConnection(params)
         ch = conn.channel()
         ch.exchange_declare(exchange=exchange, exchange_type="topic", durable=True)
+        # Ensure queue exists and is bound so messages survive without a consumer
+        if exchange == "calendar.exchange":
+            ch.queue_declare(queue="planning.calendar.invite", durable=True)
+            ch.queue_bind(queue="planning.calendar.invite", exchange=exchange, routing_key="frontend.to.planning.calendar.invite")
+        elif exchange == "planning.exchange":
+            ch.queue_declare(queue="planning.session.events", durable=True)
+            ch.queue_bind(queue="planning.session.events", exchange=exchange, routing_key=routing_key)
         ch.basic_publish(
             exchange=exchange,
             routing_key=routing_key,
@@ -181,7 +248,7 @@ def _rabbit_publish(exchange: str, routing_key: str, xml: str) -> bool:
         return False
 
 
-def _publish_calendar_invite(session_id, title, start_dt, end_dt, location) -> tuple[bool, str]:
+def _publish_calendar_invite(session_id, title, start_dt, end_dt, location, user_id=None) -> tuple[bool, str]:
     """Publish a calendar.invite message. Returns (success, method)."""
     try:
         xml = build_calendar_invite_xml(
@@ -190,11 +257,43 @@ def _publish_calendar_invite(session_id, title, start_dt, end_dt, location) -> t
             start_datetime=start_dt,
             end_datetime=end_dt,
             location=location,
+            user_id=user_id,
         )
-        if _rabbit_publish("calendar.exchange", "calendar.invite", xml):
+        if _rabbit_publish("calendar.exchange", "frontend.to.planning.calendar.invite", xml):
             return True, "rabbitmq"
     except Exception as exc:
         logger.warning("calendar.invite build/publish failed: %s", exc)
+
+    ok = _db_direct_insert(session_id, title, start_dt, end_dt, location)
+    return ok, "direct_db"
+
+
+def _publish_session_create_request(
+    session_id,
+    title,
+    start_dt,
+    end_dt,
+    location,
+    session_type="keynote",
+    status="published",
+    max_attendees=0,
+) -> tuple[bool, str]:
+    """Publish a session_create_request message. Returns (success, method)."""
+    try:
+        xml = build_session_create_request_xml(
+            session_id=session_id,
+            title=title,
+            start_datetime=start_dt,
+            end_datetime=end_dt,
+            location=location,
+            session_type=session_type,
+            status=status,
+            max_attendees=max_attendees,
+        )
+        if _rabbit_publish("planning.exchange", "frontend.to.planning.session.create", xml):
+            return True, "rabbitmq"
+    except Exception as exc:
+        logger.warning("session_create_request build/publish failed: %s", exc)
 
     ok = _db_direct_insert(session_id, title, start_dt, end_dt, location)
     return ok, "direct_db"
@@ -268,7 +367,7 @@ def _publish_session_updated(session_id, title, start_dt, end_dt, location) -> t
             end_datetime=end_dt,
             location=location,
         )
-        if _rabbit_publish("planning.exchange", "planning.session.updated", xml):
+        if _rabbit_publish("planning.exchange", "planning.to.frontend.session.updated", xml):
             return True, "rabbitmq"
     except Exception as exc:
         logger.warning("session_updated build/publish failed: %s", exc)
@@ -392,17 +491,17 @@ def _html(client_id: str) -> str:
       <div class="flow">
         <span class="flow-step active">Frontend</span>
         <span class="flow-arrow">→</span>
-        <span class="flow-step">calendar.invite<br><small>RabbitMQ</small></span>
+        <span class="flow-step">session_create_request<br><small>RabbitMQ</small></span>
         <span class="flow-arrow">→</span>
         <span class="flow-step">consumer.py<br><small>Planning</small></span>
         <span class="flow-arrow">→</span>
-        <span class="flow-step">graph_service<br><small>Outlook</small></span>
-        <span class="flow-arrow">→</span>
         <span class="flow-step">session_created<br><small>planning.exchange</small></span>
+        <span class="flow-arrow">→</span>
+        <span class="flow-step">calendar.invite<br><small>join user</small></span>
       </div>
       <p style="font-size:0.8rem;color:#64748b">
-        Joining a session adds the event to your personal Outlook calendar (requires sign-in).
-        Editing publishes a <code style="color:#93c5fd">session_updated</code> message via RabbitMQ.
+        Admin creation now publishes a <code style="color:#93c5fd">session_create_request</code>.
+        Joining a session still publishes <code style="color:#93c5fd">calendar.invite</code> with a user ID.
       </p>
     </div>
 
@@ -415,49 +514,93 @@ def _html(client_id: str) -> str:
     </div>
   </div>
 
-  <!-- Right: create / status -->
+  <!-- Right: simulator + status + ICS -->
   <div>
-    <div class="card">
-      <h2>➕ Create Session</h2>
+    <div class="card" style="border-color:#7c3aed">
+      <h2>🧪 Drupal / Frontend Simulator</h2>
+      <p style="font-size:0.78rem;color:#64748b;margin-bottom:14px">
+        Simuleert berichten die Drupal/frontend naar Planning stuurt via RabbitMQ.
+      </p>
 
-      <label>Title</label>
-      <input id="title" type="text" placeholder="Keynote: AI in Healthcare" value="Keynote: AI in Healthcare"/>
+      <!-- Tabs -->
+      <div style="display:flex;gap:6px;margin-bottom:14px;flex-wrap:wrap">
+        <button id="tab-create" class="btn btn-primary btn-sm" onclick="showTab('create')">➕ Create Session</button>
+        <button id="tab-update" class="btn btn-outline btn-sm" onclick="showTab('update')">✏️ Sessie bijwerken</button>
+        <button id="tab-delete" class="btn btn-outline btn-sm" onclick="showTab('delete')">🗑 Sessie verwijderen</button>
+      </div>
 
-      <label>Start</label>
-      <input id="start" type="datetime-local" value="2026-05-15T14:00"/>
+      <!-- Tab: Create -->
+      <div id="panel-create">
+        <div style="font-size:0.75rem;color:#c084fc;margin-bottom:8px">→ <code>frontend.to.planning.session.create</code></div>
+        <label>Titel</label>
+        <input id="title" type="text" placeholder="Keynote: AI in Healthcare" value="Keynote: AI in Healthcare"/>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+          <div><label>Start</label><input id="start" type="datetime-local" value="2026-05-15T14:00"/></div>
+          <div><label>End</label><input id="end" type="datetime-local" value="2026-05-15T15:00"/></div>
+        </div>
+        <label>Locatie</label>
+        <input id="location" type="text" placeholder="Aula A - Campus Jette" value="Aula A - Campus Jette"/>
+        <label>Type</label>
+        <select id="session_type">
+          <option value="keynote">Keynote</option>
+          <option value="workshop">Workshop</option>
+          <option value="panel">Panel</option>
+          <option value="networking">Networking</option>
+        </select>
+        <label>Max attendees</label>
+        <input id="max_attendees" type="number" min="0" value="120"/>
+        <button class="btn btn-primary" style="width:100%;margin-top:14px" onclick="createSession()">
+          📤 Publish session_create_request
+        </button>
+        <div id="lastXml" style="display:none;margin-top:12px">
+          <div style="font-size:0.75rem;color:#64748b;margin-bottom:4px">Published XML</div>
+          <pre id="xmlPreview" style="background:#0f172a;border:1px solid #334155;border-radius:8px;
+               padding:10px;font-size:0.7rem;color:#86efac;overflow-x:auto;white-space:pre-wrap;max-height:200px"></pre>
+        </div>
+      </div>
 
-      <label>End</label>
-      <input id="end" type="datetime-local" value="2026-05-15T15:00"/>
-
-      <label>Location</label>
-      <input id="location" type="text" placeholder="Aula A - Campus Jette" value="Aula A - Campus Jette"/>
-
-      <label>Session Type</label>
-      <select id="session_type">
-        <option value="keynote">Keynote</option>
-        <option value="workshop">Workshop</option>
-        <option value="panel">Panel</option>
-        <option value="networking">Networking</option>
-      </select>
-
-      <div style="margin-top:20px">
-        <button class="btn btn-primary" style="width:100%" onclick="createSession()">
-          📤 Publish calendar.invite
+      <!-- Tab: Update -->
+      <div id="panel-update" style="display:none">
+        <div style="font-size:0.75rem;color:#c084fc;margin-bottom:8px">→ <code>frontend.to.planning.session.update</code></div>
+        <label>Session ID</label>
+        <input id="drupal-session-id" type="text" placeholder="Plak hier het Session ID"/>
+        <label>Nieuwe titel</label>
+        <input id="drupal-title" type="text" placeholder="Keynote: AI 2026"/>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+          <div><label>Start</label><input id="drupal-start" type="datetime-local" value="2026-05-15T14:00"/></div>
+          <div><label>End</label><input id="drupal-end" type="datetime-local" value="2026-05-15T15:00"/></div>
+        </div>
+        <label>Locatie</label>
+        <input id="drupal-location" type="text" placeholder="Zaal A"/>
+        <button class="btn btn-warning" style="width:100%;margin-top:14px" onclick="drupalUpdateSession()">
+          📤 Publish session_update_request
         </button>
       </div>
 
-      <div id="lastXml" style="display:none;margin-top:16px">
-        <div style="font-size:0.75rem;color:#64748b;margin-bottom:6px">Published XML</div>
-        <pre id="xmlPreview" style="background:#0f172a;border:1px solid #334155;border-radius:8px;
-             padding:12px;font-size:0.7rem;color:#86efac;overflow-x:auto;white-space:pre-wrap"></pre>
+      <!-- Tab: Delete -->
+      <div id="panel-delete" style="display:none">
+        <div style="font-size:0.75rem;color:#c084fc;margin-bottom:8px">→ <code>frontend.to.planning.session.delete</code></div>
+        <label>Session ID</label>
+        <input id="drupal-delete-session-id" type="text" placeholder="Plak hier het Session ID"/>
+        <label>Reden</label>
+        <input id="drupal-reason" type="text" placeholder="cancelled" value="cancelled"/>
+        <button class="btn btn-outline" style="width:100%;margin-top:14px;border-color:#ef4444;color:#fca5a5" onclick="drupalDeleteSession()">
+          🗑 Publish session_delete_request
+        </button>
       </div>
     </div>
 
     <div class="card" style="margin-top:16px">
       <h2>ℹ️ Status</h2>
-      <div id="statusPanel" style="font-size:0.8rem;color:#64748b">
-        Waiting for action…
-      </div>
+      <div id="statusPanel" style="font-size:0.8rem;color:#64748b">Waiting for action…</div>
+    </div>
+
+    <div class="card" style="margin-top:16px">
+      <h2>
+        📆 ICS Feeds
+        <button class="btn btn-outline btn-sm" onclick="loadIcsFeeds()" style="margin-left:auto">↻ Refresh</button>
+      </h2>
+      <div id="icsFeedsList" style="font-size:0.8rem;color:#64748b">Loading…</div>
     </div>
   </div>
 </div>
@@ -553,7 +696,31 @@ function setUser(account) {{
   document.getElementById("userInitial").textContent = name.charAt(0).toUpperCase();
   document.getElementById("loginSection").style.display = "none";
   document.getElementById("userSection").style.display = "flex";
-  setStatus(`✅ Signed in as <b>${{name}}</b> — joining a session will add it to your Outlook calendar.`);
+  setStatus(`✅ Signed in as <b>${{name}}</b> — enregistrement du token Outlook…`);
+  _registerOutlookToken(account);
+}}
+
+async function _registerOutlookToken(account) {{
+  if (!graphAccessToken) return;
+  try {{
+    const r = await fetch("/api/register-token", {{
+      method: "POST",
+      headers: {{"Content-Type": "application/json"}},
+      body: JSON.stringify({{
+        user_id: account.username,
+        access_token: graphAccessToken,
+        expires_in: 3600,
+      }}),
+    }});
+    const data = await r.json();
+    if (data.ok) {{
+      setStatus(`✅ Signed in as <b>${{account.name || account.username}}</b> — token Outlook enregistré, les sessions seront synchronisées dans ton calendrier.`);
+    }} else {{
+      setStatus(`✅ Signed in as <b>${{account.name || account.username}}</b> — ⚠️ token non enregistré: ${{data.error}}`);
+    }}
+  }} catch(e) {{
+    setStatus(`✅ Signed in — ⚠️ impossible d'enregistrer le token: ${{e.message}}`);
+  }}
 }}
 
 // ─── Add user as attendee to the planning event ───────────────────────────
@@ -632,11 +799,20 @@ function renderSessions(sessions) {{
       <div class="btn-actions">
         <button class="btn btn-success btn-sm"
           onclick="joinSession('${{sid}}','${{safeTitle}}','${{startIso}}','${{endIso}}','${{safeLoc}}')">
-          📩 Join &amp; Add to Calendar
+          📩 Deelnemen
         </button>
         <button class="btn btn-warning btn-sm" onclick="toggleEdit('${{sid}}')">
           ✏️ Edit
         </button>
+      </div>
+      <!-- Non-Microsoft join form -->
+      <div id="ics-join-${{sid}}" style="display:none;margin-top:10px;padding:10px;background:#0f172a;border-radius:8px;border:1px solid #334155">
+        <div style="font-size:0.78rem;color:#94a3b8;margin-bottom:6px">📧 Deelnemen zonder Microsoft — geef je e-mail of ID op</div>
+        <div style="display:flex;gap:8px">
+          <input id="ics-email-${{sid}}" type="text" placeholder="jouw@email.com of usr-123" style="flex:1;background:#1e293b"/>
+          <button class="btn btn-success btn-sm" onclick="joinWithIcs('${{sid}}','${{safeTitle}}','${{startIso}}','${{endIso}}','${{safeLoc}}')">✓ OK</button>
+          <button class="btn btn-outline btn-sm" onclick="document.getElementById('ics-join-${{sid}}').style.display='none'">✕</button>
+        </div>
       </div>
 
       <!-- Inline edit form -->
@@ -670,12 +846,14 @@ async function createSession() {{
   const start    = document.getElementById("start").value;
   const end      = document.getElementById("end").value;
   const location = document.getElementById("location").value.trim();
+  const sessionType = document.getElementById("session_type").value;
+  const maxAttendees = parseInt(document.getElementById("max_attendees").value || "0", 10);
 
   if (!title || !start || !end) {{
     showToast("Fill in Title, Start, and End first.", "err"); return;
   }}
 
-  setStatus("⏳ Publishing <code>calendar.invite</code> to RabbitMQ…");
+  setStatus("⏳ Publishing <code>session_create_request</code> to RabbitMQ…");
 
   try {{
     const r = await fetch("/api/sessions", {{
@@ -686,17 +864,22 @@ async function createSession() {{
         start_datetime: start + ":00Z",
         end_datetime:   end   + ":00Z",
         location,
+        session_type: sessionType,
+        max_attendees: Number.isFinite(maxAttendees) ? maxAttendees : 0,
         requested_by: currentUser ? currentUser.username : "demo-user",
       }})
     }});
     const data = await r.json();
     if (data.ok) {{
       showToast(`✅ Session created via ${{data.method}}`, "ok");
-      setStatus(`✅ <b>calendar.invite</b> published via <b>${{data.method}}</b><br>
-        <span style="color:#64748b">Session ID: ${{data.session_id}}</span>`);
+      let statusHtml = `✅ <b>session_create_request</b> published via <b>${{data.method}}</b><br>
+        <span style="color:#64748b">Session created with ID: ${{data.session_id}}</span><br>
+        <span style="color:#64748b">Planning will emit <code>session_created</code> for downstream consumers.</span>`;
+      setStatus(statusHtml);
       document.getElementById("xmlPreview").textContent = data.xml || "";
       document.getElementById("lastXml").style.display = "block";
       loadSessions();
+      loadIcsFeeds();
     }} else {{
       showToast("❌ " + (data.error || "Unknown error"), "err");
       setStatus("❌ " + (data.error || "Unknown error"));
@@ -708,38 +891,60 @@ async function createSession() {{
 
 // ─── Join session ──────────────────────────────────────────────────────────
 async function joinSession(id, title, startIso, endIso, location) {{
-  setStatus(`⏳ Joining <b>${{title}}</b>…`);
+  if (currentUser) {{
+    // Microsoft user → Outlook sync
+    setStatus(`⏳ Deelnemen als <b>${{currentUser.name || currentUser.username}}</b>…`);
+    try {{
+      const r = await fetch(`/api/sessions/${{id}}/join`, {{
+        method: "POST",
+        headers: {{"Content-Type": "application/json"}},
+        body: JSON.stringify({{
+          user_id: currentUser.username,
+          title, start_datetime: startIso, end_datetime: endIso, location,
+        }})
+      }});
+      const data = await r.json();
+      if (!data.ok) {{ showToast("❌ " + (data.error || "Failed"), "err"); return; }}
+    }} catch(e) {{ showToast("❌ " + e.message, "err"); return; }}
 
-  // 1. Notify the backend (RabbitMQ / DB)
+    const calOk = await addToMyCalendar(id, title, startIso, endIso, location);
+    if (calOk) {{
+      showToast("✅ Deelgenomen — event toegevoegd aan je Outlook kalender", "ok");
+      setStatus(`✅ <b>${{title}}</b> staat in je Outlook kalender.`);
+    }} else {{
+      showToast("✅ Deelgenomen (Outlook sync pending)", "ok");
+    }}
+  }} else {{
+    // Geen Microsoft account → toon ICS form
+    const form = document.getElementById("ics-join-" + id);
+    if (form) form.style.display = form.style.display === "block" ? "none" : "block";
+  }}
+}}
+
+async function joinWithIcs(id, title, startIso, endIso, location) {{
+  const userId = document.getElementById("ics-email-" + id).value.trim();
+  if (!userId) {{ showToast("Geef je e-mail of ID op.", "err"); return; }}
+
+  setStatus(`⏳ Inschrijven als <b>${{userId}}</b>…`);
   try {{
     const r = await fetch(`/api/sessions/${{id}}/join`, {{
       method: "POST",
       headers: {{"Content-Type": "application/json"}},
       body: JSON.stringify({{
-        requested_by: currentUser ? currentUser.username : "demo-user",
+        user_id: userId,
         title, start_datetime: startIso, end_datetime: endIso, location,
       }})
     }});
     const data = await r.json();
-    if (!data.ok) {{
-      showToast("❌ " + (data.error || "Failed"), "err"); return;
-    }}
-  }} catch(e) {{
-    showToast("❌ " + e.message, "err"); return;
-  }}
-
-  // 2. If signed in, add user as attendee to the planning event
-  if (currentUser) {{
-    const calOk = await addToMyCalendar(id, title, startIso, endIso, location);
-    if (calOk) {{
-      showToast(`✅ Joined & added to your Outlook calendar`, "ok");
+    if (data.ok) {{
+      document.getElementById("ics-join-" + id).style.display = "none";
+      showToast("✅ Ingeschreven! ICS link wordt aangemaakt…", "ok");
+      setStatus(`✅ Ingeschreven als <b>${{userId}}</b> — ICS feed wordt aangemaakt, zie hieronder.`);
+      setTimeout(loadIcsFeeds, 1500);
     }} else {{
-      showToast(`✅ Joined (calendar sync pending)`, "ok");
+      showToast("❌ " + (data.error || "Fout"), "err");
     }}
-  }} else {{
-    showToast(`✅ Joined: ${{title}} (sign in to add to your calendar)`, "ok");
-    setStatus(`✅ Joined <b>${{title}}</b> — <a href="#" onclick="msLogin()" style="color:#93c5fd">Sign in</a> to add to your Outlook calendar.`);
-  }}
+  }} catch(e) {{ showToast("❌ " + e.message, "err"); }}
 }}
 
 // ─── Edit session ──────────────────────────────────────────────────────────
@@ -799,10 +1004,104 @@ function setStatus(html) {{
   document.getElementById("statusPanel").innerHTML = html;
 }}
 
+// ─── ICS Feeds ────────────────────────────────────────────────────────────
+const ICS_BASE = window.location.protocol + "//" + window.location.hostname + ":30050";
+
+async function loadIcsFeeds() {{
+  try {{
+    const r = await fetch("/api/ics-feeds");
+    const feeds = await r.json();
+    const el = document.getElementById("icsFeedsList");
+    if (!feeds.length) {{
+      el.innerHTML = '<span style="color:#475569">Aucun feed ICS pour l\\'instant.</span>';
+      return;
+    }}
+    el.innerHTML = feeds.map(f => {{
+      const url = `${{ICS_BASE}}/ical/${{f.user_id}}?token=${{f.feed_token}}`;
+      const webcal = url.replace("http://", "webcal://");
+      return `<div style="margin-bottom:12px;padding:10px;background:#0f172a;border-radius:8px;border:1px solid #334155">
+        <div style="font-weight:600;color:#f1f5f9;margin-bottom:4px">👤 ${{f.user_id}}
+          <span style="color:#64748b;font-weight:400;margin-left:8px">${{f.session_count}} session(s)</span>
+        </div>
+        <div style="word-break:break-all;margin-bottom:4px">
+          <a href="${{url}}" target="_blank" style="color:#93c5fd;font-size:0.75rem">${{url}}</a>
+        </div>
+        <div style="color:#64748b;font-size:0.72rem">webcal: ${{webcal}}</div>
+        <div style="margin-top:6px;display:flex;gap:6px">
+          <button class="btn btn-outline btn-sm" onclick="navigator.clipboard.writeText('${{url}}')">📋 Copier http</button>
+          <button class="btn btn-outline btn-sm" onclick="navigator.clipboard.writeText('${{webcal}}')">📋 Copier webcal</button>
+          <a href="${{url}}" class="btn btn-outline btn-sm" download>⬇️ Télécharger .ics</a>
+        </div>
+      </div>`;
+    }}).join("");
+  }} catch(e) {{
+    document.getElementById("icsFeedsList").textContent = "Erreur: " + e.message;
+  }}
+}}
+
+// ─── Drupal Simulator ─────────────────────────────────────────────────────
+async function drupalUpdateSession() {{
+  const sessionId = document.getElementById("drupal-session-id").value.trim();
+  const title     = document.getElementById("drupal-title").value.trim();
+  const start     = document.getElementById("drupal-start").value;
+  const end       = document.getElementById("drupal-end").value;
+  const location  = document.getElementById("drupal-location").value.trim();
+  if (!sessionId || !title || !start || !end) {{
+    showToast("Session ID, titre, start et end requis.", "err"); return;
+  }}
+  setStatus("⏳ Publishing <code>session_update_request</code>…");
+  try {{
+    const r = await fetch("/api/drupal/update", {{
+      method: "POST",
+      headers: {{"Content-Type": "application/json"}},
+      body: JSON.stringify({{ session_id: sessionId, title, start_datetime: start + ":00Z",
+                              end_datetime: end + ":00Z", location }}),
+    }});
+    const data = await r.json();
+    if (data.ok) {{
+      showToast("✅ session_update_request publié", "ok");
+      setStatus(`✅ <b>session_update_request</b> publié — le consumer va mettre à jour la session et les calendriers Outlook.`);
+      loadSessions();
+    }} else {{ showToast("❌ " + (data.error || "Erreur"), "err"); }}
+  }} catch(e) {{ showToast("❌ " + e.message, "err"); }}
+}}
+
+async function drupalDeleteSession() {{
+  const sessionId = document.getElementById("drupal-delete-session-id").value.trim();
+  const reason    = document.getElementById("drupal-reason").value.trim() || "cancelled";
+  if (!sessionId) {{ showToast("Session ID requis.", "err"); return; }}
+  if (!confirm(`Supprimer la session ${{sessionId}} ?`)) return;
+  setStatus("⏳ Publishing <code>session_delete_request</code>…");
+  try {{
+    const r = await fetch("/api/drupal/delete", {{
+      method: "POST",
+      headers: {{"Content-Type": "application/json"}},
+      body: JSON.stringify({{ session_id: sessionId, reason }}),
+    }});
+    const data = await r.json();
+    if (data.ok) {{
+      showToast("✅ session_delete_request publié", "ok");
+      setStatus(`✅ <b>session_delete_request</b> publié — le consumer va supprimer la session et annuler les événements Outlook.`);
+      loadSessions();
+    }} else {{ showToast("❌ " + (data.error || "Erreur"), "err"); }}
+  }} catch(e) {{ showToast("❌ " + e.message, "err"); }}
+}}
+
+// ─── Tabs ─────────────────────────────────────────────────────────────────
+function showTab(name) {{
+  ["create","update","delete"].forEach(t => {{
+    document.getElementById("panel-" + t).style.display = t === name ? "block" : "none";
+    const btn = document.getElementById("tab-" + t);
+    btn.className = t === name ? "btn btn-primary btn-sm" : "btn btn-outline btn-sm";
+  }});
+}}
+
 // ─── Init ──────────────────────────────────────────────────────────────────
 initMsal();
 loadSessions();
+loadIcsFeeds();
 setInterval(loadSessions, 15000);
+setInterval(loadIcsFeeds, 15000);
 </script>
 </body>
 </html>"""
@@ -838,6 +1137,8 @@ class DemoHandler(BaseHTTPRequestHandler):
                 self.wfile.write(html)
             elif path == "/api/sessions":
                 self._send_json(_db_sessions())
+            elif path == "/api/ics-feeds":
+                self._send_json(_db_ics_feeds())
             elif path.startswith("/static/"):
                 filename = path[len("/static/"):]
                 filepath = _STATIC_DIR / filename
@@ -866,18 +1167,36 @@ class DemoHandler(BaseHTTPRequestHandler):
                 start_dt = body.get("start_datetime", "")
                 end_dt   = body.get("end_datetime", "")
                 location = body.get("location", "")
+                session_type = body.get("session_type", "keynote")
+                max_attendees = int(body.get("max_attendees", 0) or 0)
 
-                ok, method = _publish_calendar_invite(session_id, title, start_dt, end_dt, location)
+                ok, method = _publish_session_create_request(
+                    session_id,
+                    title,
+                    start_dt,
+                    end_dt,
+                    location,
+                    session_type=session_type,
+                    max_attendees=max_attendees,
+                )
 
                 try:
-                    xml_preview = build_calendar_invite_xml(
-                        session_id=session_id, title=title,
-                        start_datetime=start_dt, end_datetime=end_dt, location=location,
+                    xml_preview = build_session_create_request_xml(
+                        session_id=session_id,
+                        title=title,
+                        start_datetime=start_dt,
+                        end_datetime=end_dt,
+                        location=location,
+                        session_type=session_type,
+                        max_attendees=max_attendees,
                     )
                 except Exception:
                     xml_preview = ""
 
-                self._send_json({"ok": ok, "session_id": session_id, "method": method, "xml": xml_preview})
+                self._send_json({
+                    "ok": ok, "session_id": session_id,
+                    "method": method, "xml": xml_preview,
+                })
 
             elif path.endswith("/join"):
                 parts = path.strip("/").split("/")
@@ -888,6 +1207,7 @@ class DemoHandler(BaseHTTPRequestHandler):
                     body.get("start_datetime", ""),
                     body.get("end_datetime", ""),
                     body.get("location", ""),
+                    user_id=body.get("user_id") or None,
                 )
                 self._send_json({"ok": ok, "method": method})
 
@@ -901,6 +1221,41 @@ class DemoHandler(BaseHTTPRequestHandler):
                     return
                 ok, error = _add_attendee_to_event(session_id, attendee_email)
                 self._send_json({"ok": ok, "error": error})
+
+            elif path == "/api/drupal/update":
+                ok = _rabbit_publish(
+                    "planning.exchange",
+                    "frontend.to.planning.session.update",
+                    build_session_update_request_xml(
+                        session_id=body.get("session_id", ""),
+                        title=body.get("title", ""),
+                        start_datetime=body.get("start_datetime", ""),
+                        end_datetime=body.get("end_datetime", ""),
+                        location=body.get("location", ""),
+                    ),
+                )
+                self._send_json({"ok": ok})
+
+            elif path == "/api/drupal/delete":
+                ok = _rabbit_publish(
+                    "planning.exchange",
+                    "frontend.to.planning.session.delete",
+                    build_session_delete_request_xml(
+                        session_id=body.get("session_id", ""),
+                        reason=body.get("reason", "cancelled"),
+                    ),
+                )
+                self._send_json({"ok": ok})
+
+            elif path == "/api/register-token":
+                user_id = body.get("user_id", "").strip()
+                access_token = body.get("access_token", "").strip()
+                expires_in = int(body.get("expires_in", 3600))
+                if not user_id or not access_token:
+                    self._send_json({"ok": False, "error": "user_id and access_token required"}, 400)
+                    return
+                ok, err = _register_token(user_id, access_token, expires_in)
+                self._send_json({"ok": ok, "error": err})
 
             else:
                 self._send_json({"error": "not found"}, 404)
@@ -961,7 +1316,8 @@ if __name__ == "__main__":
     logger.info("Frontend demo running at http://localhost:%d", DEMO_PORT)
     logger.info(ms_status)
     logger.info("NOTE: Add http://localhost:%d as a redirect URI (SPA) in your Azure app", DEMO_PORT)
-    server = HTTPServer(("0.0.0.0", DEMO_PORT), DemoHandler)
+    logger.info("DB host: %s:%s", os.getenv("POSTGRES_HOST", "localhost"), os.getenv("POSTGRES_PORT", "5433"))
+    server = ThreadingHTTPServer(("0.0.0.0", DEMO_PORT), DemoHandler)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
