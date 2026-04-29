@@ -31,7 +31,7 @@ class TestPublishSessionCreated:
 
         assert result is True
         assert mock_publish.called
-        assert "planning.session.created" in str(mock_publish.call_args)
+        assert "planning.to.frontend.session.created" in str(mock_publish.call_args)
 
     @patch("producer.time.sleep")
     @patch("producer._publish_message")
@@ -89,7 +89,7 @@ class TestPublishSessionUpdated:
 
         assert result is True
         assert mock_publish.called
-        assert "planning.session.updated" in str(mock_publish.call_args)
+        assert "planning.to.frontend.session.updated" in str(mock_publish.call_args)
 
 
 class TestPublishSessionDeleted:
@@ -108,7 +108,7 @@ class TestPublishSessionDeleted:
 
         assert result is True
         assert mock_publish.called
-        assert "planning.session.deleted" in str(mock_publish.call_args)
+        assert "planning.to.frontend.session.deleted" in str(mock_publish.call_args)
 
     @patch("producer._publish_message")
     def test_publish_session_deleted_includes_reason(self, mock_publish):
@@ -150,7 +150,7 @@ class TestPublishSessionViewResponse:
 
         assert result is True
         assert mock_publish.called
-        assert "planning.session.view_response" in str(mock_publish.call_args)
+        assert "planning.to.frontend.session.view.response" in str(mock_publish.call_args)
 
     @patch("producer._publish_message")
     def test_publish_session_view_response_not_found(self, mock_publish):
@@ -245,7 +245,7 @@ class TestPublishWithValidationAndRetry:
 
         result = _publish_with_validation_and_retry(
             VALID_SESSION_CREATED_XML.decode(),
-            "planning.session.created",
+            "planning.to.frontend.session.created",
             "session_created",
         )
 
@@ -257,7 +257,7 @@ class TestPublishWithValidationAndRetry:
         """Invalid XML is blocked at the XSD gate — never reaches RabbitMQ."""
         result = _publish_with_validation_and_retry(
             INVALID_SESSION_CREATED_XML.decode(),
-            "planning.session.created",
+            "planning.to.frontend.session.created",
             "session_created",
         )
 
@@ -272,7 +272,7 @@ class TestPublishWithValidationAndRetry:
 
         result = _publish_with_validation_and_retry(
             VALID_SESSION_CREATED_XML.decode(),
-            "planning.session.created",
+            "planning.to.frontend.session.created",
             "session_created",
             max_retries=3,
         )
@@ -288,7 +288,7 @@ class TestPublishWithValidationAndRetry:
 
         result = _publish_with_validation_and_retry(
             VALID_SESSION_CREATED_XML.decode(),
-            "planning.session.created",
+            "planning.to.frontend.session.created",
             "session_created",
             max_retries=3,
         )
@@ -304,7 +304,7 @@ class TestPublishWithValidationAndRetry:
 
         _publish_with_validation_and_retry(
             VALID_SESSION_CREATED_XML.decode(),
-            "planning.session.created",
+            "planning.to.frontend.session.created",
             "session_created",
             max_retries=3,
             initial_delay=1.0,
