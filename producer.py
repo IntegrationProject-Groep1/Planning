@@ -8,6 +8,7 @@ Failed publishes are retried with exponential backoff (default: 3 attempts).
 Invalid XML is blocked and logged — it is never published.
 """
 
+import pathlib
 import pika
 import os
 import time
@@ -24,8 +25,9 @@ from xml_handlers import (
 from xsd_validator import validate_xml
 
 # Load environment variables
-load_dotenv(".env.local", override=True)
-load_dotenv()
+_HERE = pathlib.Path(__file__).parent
+load_dotenv(_HERE / ".env.local", override=True)
+load_dotenv(_HERE / ".env")
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)

@@ -228,13 +228,11 @@ def _rabbit_publish(exchange: str, routing_key: str, xml: str) -> bool:
         conn = pika.BlockingConnection(params)
         ch = conn.channel()
         ch.exchange_declare(exchange=exchange, exchange_type="topic", durable=True)
-        # Ensure queue exists and is bound so messages survive without a consumer
+        # Use passive=True to avoid conflicting with consumer's queue declarations (DLX args)
         if exchange == "calendar.exchange":
-            ch.queue_declare(queue="planning.calendar.invite", durable=True)
-            ch.queue_bind(queue="planning.calendar.invite", exchange=exchange, routing_key="frontend.to.planning.calendar.invite")
+            ch.queue_declare(queue="planning.calendar.invite", durable=True, passive=True)
         elif exchange == "planning.exchange":
-            ch.queue_declare(queue="planning.session.events", durable=True)
-            ch.queue_bind(queue="planning.session.events", exchange=exchange, routing_key=routing_key)
+            ch.queue_declare(queue="planning.session.events", durable=True, passive=True)
         ch.basic_publish(
             exchange=exchange,
             routing_key=routing_key,
@@ -701,14 +699,22 @@ function setUser(account) {{
 }}
 
 async function _registerOutlookToken(account) {{
-  if (!graphAccessToken) return;
+  let token = graphAccessToken;
+  if (!token) {{
+    token = await getGraphToken();
+    if (token) graphAccessToken = token;
+  }}
+  if (!token) {{
+    setStatus(`✅ Signed in as <b>${{account.name || account.username}}</b> — ⚠️ impossible d'acquérir le token Graph (reconnecte-toi).`);
+    return;
+  }}
   try {{
     const r = await fetch("/api/register-token", {{
       method: "POST",
       headers: {{"Content-Type": "application/json"}},
       body: JSON.stringify({{
         user_id: account.username,
-        access_token: graphAccessToken,
+        access_token: token,
         expires_in: 3600,
       }}),
     }});
@@ -740,12 +746,9 @@ async function addToMyCalendar(sessionId, title, startIso, endIso, location) {{
     if (data.ok) {{
       setStatus(`✅ <b>${{email}}</b> ajouté comme attendee — tu recevras l'invite Outlook.`);
       return true;
-    }} else {{
-      setStatus(`⚠️ ${{data.error || "Could not add attendee"}}`);
-      return false;
     }}
+    return false;  // graph_sync not ready yet — caller shows pending message
   }} catch(e) {{
-    setStatus("⚠️ " + e.message);
     return false;
   }}
 }}
@@ -912,7 +915,8 @@ async function joinSession(id, title, startIso, endIso, location) {{
       showToast("✅ Deelgenomen — event toegevoegd aan je Outlook kalender", "ok");
       setStatus(`✅ <b>${{title}}</b> staat in je Outlook kalender.`);
     }} else {{
-      showToast("✅ Deelgenomen (Outlook sync pending)", "ok");
+      showToast("✅ Deelgenomen — Outlook sync wordt verwerkt…", "ok");
+      setStatus(`✅ Deelname geregistreerd voor <b>${{title}}</b> — de Outlook uitnodiging verschijnt zodra de planning service het verwerkt.`);
     }}
   }} else {{
     // Geen Microsoft account → toon ICS form

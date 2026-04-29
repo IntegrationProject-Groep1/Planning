@@ -7,6 +7,7 @@ Supports: calendar.invite, session_created, session_updated, session_deleted,
 """
 
 import json
+import pathlib
 import pika
 import os
 import logging
@@ -18,8 +19,9 @@ from urllib.parse import urlparse, parse_qs
 from dotenv import load_dotenv
 from lxml import etree
 
-load_dotenv(".env.local", override=True)
-load_dotenv()
+_HERE = pathlib.Path(__file__).parent
+load_dotenv(_HERE / ".env.local", override=True)
+load_dotenv(_HERE / ".env")
 
 from xml_handlers import parse_message
 from xml_models import (
