@@ -5,16 +5,19 @@ Tests for XML parsing and validation (xml_handlers.py).
 import pytest
 from xml_handlers import (
     parse_calendar_invite,
+    parse_session_create_request,
     parse_session_created,
     parse_session_updated,
     parse_session_deleted,
     parse_session_view_request,
     parse_message,
+    build_session_create_request_xml,
     build_session_created_xml,
     build_session_view_response_xml,
 )
 from xml_models import (
     CalendarInviteMessage,
+    SessionCreateRequestMessage,
     SessionCreatedMessage,
     SessionUpdatedMessage,
     SessionDeletedMessage,
@@ -71,6 +74,19 @@ class TestParseSessionCreated:
         assert msg.body.status == "published"
 
 
+class TestParseSessionCreateRequest:
+    """Tests for session_create_request parsing."""
+
+    def test_parse_valid_session_create_request(self, sample_session_create_request_xml):
+        """Parsing valid session_create_request should succeed."""
+        msg = parse_session_create_request(sample_session_create_request_xml)
+        assert msg is not None
+        assert isinstance(msg, SessionCreateRequestMessage)
+        assert msg.body.session_id == "sess-000"
+        assert msg.body.session_type == "workshop"
+        assert msg.body.max_attendees == 80
+
+
 class TestParseSessionUpdated:
     """Tests for session_updated parsing."""
 
@@ -119,6 +135,11 @@ class TestGenericParse:
         """Generic parser should identify and parse session_created."""
         msg = parse_message(sample_session_created_xml)
         assert isinstance(msg, SessionCreatedMessage)
+
+    def test_parse_message_session_create_request(self, sample_session_create_request_xml):
+        """Generic parser should identify and parse session_create_request."""
+        msg = parse_message(sample_session_create_request_xml)
+        assert isinstance(msg, SessionCreateRequestMessage)
 
     def test_parse_message_session_updated(self, sample_session_updated_xml):
         """Generic parser should identify and parse session_updated."""
@@ -202,6 +223,27 @@ class TestBuildSessionCreatedXml:
         assert msg is not None
         assert msg.body.session_id == "sess-001"
         assert msg.body.title == "Test"
+
+
+class TestBuildSessionCreateRequestXml:
+    """Tests for session_create_request XML building."""
+
+    def test_build_session_create_request_xml_is_valid(self):
+        """Built XML should be parseable back."""
+        xml = build_session_create_request_xml(
+            session_id="sess-123",
+            title="Create Me",
+            start_datetime="2026-05-15T14:00:00Z",
+            end_datetime="2026-05-15T15:00:00Z",
+            location="online",
+            session_type="panel",
+            max_attendees=42,
+        )
+        msg = parse_session_create_request(xml.encode())
+        assert msg is not None
+        assert msg.header.type == "session_create_request"
+        assert msg.body.session_id == "sess-123"
+        assert msg.body.max_attendees == 42
 
 
 class TestBuildSessionViewResponse:

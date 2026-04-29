@@ -4,10 +4,15 @@ Tests for consumer.py - message consumption and handling.
 
 import pytest
 from unittest.mock import patch, MagicMock
-from xml_models import CalendarInviteMessage, CalendarInviteBody, MessageHeader
-from xml_handlers import parse_calendar_invite
+from xml_models import (
+    CalendarInviteMessage,
+    CalendarInviteBody,
+    MessageHeader,
+    SessionCreateRequestMessage,
+)
 from consumer import (
     handle_calendar_invite,
+    handle_session_create_request,
     handle_session_created,
     handle_session_deleted,
     route_message,
@@ -163,6 +168,42 @@ class TestHandleSessionCreated:
         mock_channel.basic_ack.assert_called_once_with(delivery_tag=456)
 
 
+class TestHandleSessionCreateRequest:
+    """Tests for session_create_request message handler."""
+
+    @patch("consumer.MessageLog.log_message")
+    @patch("consumer.SessionService.create_or_update")
+    @patch("consumer.SessionEventService.log_event")
+    @patch("consumer.MessageLog.update_message_status")
+    @patch("producer._publish_with_validation_and_retry")
+    def test_handle_session_create_request_success(
+        self,
+        mock_publish,
+        mock_update_status,
+        mock_log_event,
+        mock_create_session,
+        mock_log_msg,
+        sample_session_create_request_xml,
+        mock_channel,
+    ):
+        """Handling valid session_create_request should succeed."""
+        from xml_handlers import parse_session_create_request
+
+        msg = parse_session_create_request(sample_session_create_request_xml)
+        mock_log_msg.return_value = True
+        mock_create_session.return_value = True
+        mock_log_event.return_value = True
+        mock_publish.return_value = True
+
+        handle_session_create_request(msg, mock_channel, 789)
+
+        mock_log_msg.assert_called_once()
+        mock_create_session.assert_called_once()
+        mock_log_event.assert_called_once()
+        mock_publish.assert_called_once()
+        mock_channel.basic_ack.assert_called_once_with(delivery_tag=789)
+
+
 class TestRouteMessage:
     """Tests for message routing."""
 
@@ -172,6 +213,18 @@ class TestRouteMessage:
     ):
         """Routing should dispatch to calendar.invite handler."""
         route_message(sample_calendar_invite_message, mock_channel, 1)
+        mock_handle.assert_called_once()
+
+    @patch("consumer.handle_session_create_request")
+    def test_route_session_create_request_message(
+        self, mock_handle, sample_session_create_request_xml, mock_channel
+    ):
+        """Routing should dispatch to session_create_request handler."""
+        from xml_handlers import parse_session_create_request
+
+        msg = parse_session_create_request(sample_session_create_request_xml)
+        assert isinstance(msg, SessionCreateRequestMessage)
+        route_message(msg, mock_channel, 2)
         mock_handle.assert_called_once()
 
     def test_route_unknown_message_type(self, mock_channel):

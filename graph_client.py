@@ -120,6 +120,7 @@ class GraphClient:
         base = f"{GRAPH_BASE_URL}/me/calendar/events"
         return f"{base}/{event_id}" if event_id else base
 
+
     @staticmethod
     def _raise_for_status(response: requests.Response, context: str) -> None:
         """Raise GraphClientError with a structured message on HTTP errors."""

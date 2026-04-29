@@ -44,6 +44,9 @@
                     </xs:restriction>
                 </xs:simpleType>
             </xs:element>
+            <!-- Present only for non-Outlook users: iCalendar subscription URL.
+                 Replace http:// with webcal:// for direct calendar-app subscription. -->
+            <xs:element name="ics_url" type="xs:anyURI" minOccurs="0"/>
         </xs:sequence>
     </xs:complexType>
 

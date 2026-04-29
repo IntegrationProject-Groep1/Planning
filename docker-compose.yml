@@ -58,6 +58,9 @@ services:
       sh -c "psql postgresql://$${POSTGRES_USER}:$${POSTGRES_PASSWORD}@db:5432/$${POSTGRES_DB} -f /migrations/001_initial.sql &&
              psql postgresql://$${POSTGRES_USER}:$${POSTGRES_PASSWORD}@db:5432/$${POSTGRES_DB} -f /migrations/002_planning_schema.sql &&
              psql postgresql://$${POSTGRES_USER}:$${POSTGRES_PASSWORD}@db:5432/$${POSTGRES_DB} -f /migrations/003_graph_sync.sql &&
+             psql postgresql://$${POSTGRES_USER}:$${POSTGRES_PASSWORD}@db:5432/$${POSTGRES_DB} -f /migrations/004_user_tokens.sql &&
+             psql postgresql://$${POSTGRES_USER}:$${POSTGRES_PASSWORD}@db:5432/$${POSTGRES_DB} -f /migrations/005_ics_feeds.sql &&
+             psql postgresql://$${POSTGRES_USER}:$${POSTGRES_PASSWORD}@db:5432/$${POSTGRES_DB} -f /migrations/006_graph_sync_per_user.sql &&
              echo 'Migrations completed.'"
     depends_on:
       db:
@@ -66,17 +69,17 @@ services:
       - planning_network
     restart: "no"
 
-  # planning-service:
-  #   build: .
-  #   env_file:
-  #     - ${ENV_FILE:-.env}
-  #   ports:
-  #     - "30050:30050"
-  #   depends_on:
-  #     - db
-  #     - migrate
-  #   networks:
-  #     - planning_network
+  planning-service:
+    build: .
+    env_file:
+      - ${ENV_FILE:-.env}
+    ports:
+      - "30050:30050"
+    depends_on:
+      - db
+      - migrate
+    networks:
+      - planning_network
 
 volumes:
   rabbitmq_data:

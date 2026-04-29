@@ -140,6 +140,75 @@ class SessionDeletedMessage:
 
 
 # ============================================================================
+# session_create_request (INCOMING — from Drupal/frontend)
+# ============================================================================
+
+@dataclass
+class SessionCreateRequestBody:
+    session_id: str
+    title: str
+    start_datetime: str
+    end_datetime: str
+    location: Optional[str] = None
+    session_type: Optional[str] = None
+    status: Optional[str] = None
+    max_attendees: Optional[int] = None
+
+
+@dataclass
+class SessionCreateRequestMessage:
+    header: MessageHeader
+    body: SessionCreateRequestBody
+
+    def to_dict(self) -> dict:
+        return {"header": asdict(self.header), "body": asdict(self.body)}
+
+
+# ============================================================================
+# session_update_request (INCOMING — from Drupal/frontend)
+# ============================================================================
+
+@dataclass
+class SessionUpdateRequestBody:
+    session_id: str
+    title: str
+    start_datetime: str
+    end_datetime: str
+    location: Optional[str] = None
+    session_type: Optional[str] = None
+    status: Optional[str] = None
+    max_attendees: Optional[int] = None
+
+
+@dataclass
+class SessionUpdateRequestMessage:
+    header: MessageHeader
+    body: SessionUpdateRequestBody
+
+    def to_dict(self) -> dict:
+        return {"header": asdict(self.header), "body": asdict(self.body)}
+
+
+# ============================================================================
+# session_delete_request (INCOMING — from Drupal/frontend)
+# ============================================================================
+
+@dataclass
+class SessionDeleteRequestBody:
+    session_id: str
+    reason: Optional[str] = None
+
+
+@dataclass
+class SessionDeleteRequestMessage:
+    header: MessageHeader
+    body: SessionDeleteRequestBody
+
+    def to_dict(self) -> dict:
+        return {"header": asdict(self.header), "body": asdict(self.body)}
+
+
+# ============================================================================
 # session_view_request (INCOMING)
 # ============================================================================
 
@@ -219,6 +288,7 @@ class CalendarInviteConfirmedBody:
     session_id: str
     original_message_id: str
     status: str  # "confirmed" | "failed"
+    ics_url: Optional[str] = None  # set for non-Outlook users
 
 
 @dataclass
@@ -244,6 +314,9 @@ MESSAGE_TYPES = {
     "session_created": SessionCreatedMessage,
     "session_updated": SessionUpdatedMessage,
     "session_deleted": SessionDeletedMessage,
+    "session_create_request": SessionCreateRequestMessage,
+    "session_update_request": SessionUpdateRequestMessage,
+    "session_delete_request": SessionDeleteRequestMessage,
     "session_view_request": SessionViewRequestMessage,
     "session_view_response": SessionViewResponseMessage,
 }
