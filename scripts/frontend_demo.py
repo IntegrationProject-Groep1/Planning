@@ -95,6 +95,7 @@ _RABBIT = dict(
 
 
 _SERVICE_URL = os.getenv("SERVICE_URL", "http://localhost:30050")
+_ICS_BASE_URL = os.getenv("ICS_BASE_URL", "http://localhost:30050")
 _API_TOKEN_SECRET = os.getenv("API_TOKEN_SECRET", "")
 
 
@@ -170,7 +171,7 @@ def _db_ics_feeds() -> list[dict]:
         return []
 
 
-def _db_direct_insert(session_id, title, start_dt, end_dt, location) -> bool:
+def _db_direct_insert(session_id, title, start_dt, end_dt, location, user_id=None) -> bool:
     """Fallback: insert directly to DB when RabbitMQ is unavailable."""
     try:
         with psycopg2.connect(_DB_URL, cursor_factory=DictCursor, connect_timeout=3) as conn:
@@ -185,6 +186,22 @@ def _db_direct_insert(session_id, title, start_dt, end_dt, location) -> bool:
                     """,
                     (session_id, title, start_dt, end_dt, location),
                 )
+                if user_id:
+                    cur.execute(
+                        """
+                        INSERT INTO calendar_invites
+                            (message_id, timestamp, source, type, session_id,
+                             title, start_datetime, end_datetime, location, status, user_id)
+                        VALUES (%s, NOW(), 'frontend', 'calendar_invite', %s,
+                                %s, %s, %s, %s, 'pending', %s)
+                        ON CONFLICT (message_id) DO NOTHING
+                        """,
+                        (str(uuid.uuid4()), session_id, title, start_dt, end_dt, location, user_id),
+                    )
+                    cur.execute(
+                        "INSERT INTO ics_feeds (user_id) VALUES (%s) ON CONFLICT (user_id) DO NOTHING",
+                        (user_id,),
+                    )
         return True
     except Exception as exc:
         logger.error("DB direct insert failed: %s", exc)
@@ -262,7 +279,7 @@ def _publish_calendar_invite(session_id, title, start_dt, end_dt, location, user
     except Exception as exc:
         logger.warning("calendar.invite build/publish failed: %s", exc)
 
-    ok = _db_direct_insert(session_id, title, start_dt, end_dt, location)
+    ok = _db_direct_insert(session_id, title, start_dt, end_dt, location, user_id=user_id)
     return ok, "direct_db"
 
 
@@ -769,8 +786,11 @@ async function loadSessions() {{
 
 function toLocalInput(isoStr) {{
   if (!isoStr) return "";
-  // "2026-05-15T14:00:00+00:00" → "2026-05-15T14:00"
-  return isoStr.replace("Z","").replace("+00:00","").slice(0,16);
+  // Convert UTC ISO string → local datetime-local input value (YYYY-MM-DDTHH:MM)
+  const d = new Date(isoStr);
+  if (isNaN(d)) return "";
+  const pad = n => String(n).padStart(2, "0");
+  return `${{d.getFullYear()}}-${{pad(d.getMonth()+1)}}-${{pad(d.getDate())}}T${{pad(d.getHours())}}:${{pad(d.getMinutes())}}`;
 }}
 
 function renderSessions(sessions) {{
@@ -864,8 +884,8 @@ async function createSession() {{
       headers: {{"Content-Type": "application/json"}},
       body: JSON.stringify({{
         title,
-        start_datetime: start + ":00Z",
-        end_datetime:   end   + ":00Z",
+        start_datetime: new Date(start).toISOString(),
+        end_datetime:   new Date(end).toISOString(),
         location,
         session_type: sessionType,
         max_attendees: Number.isFinite(maxAttendees) ? maxAttendees : 0,
@@ -975,8 +995,8 @@ async function submitEdit(sid) {{
       headers: {{"Content-Type": "application/json"}},
       body: JSON.stringify({{
         title,
-        start_datetime: start + ":00Z",
-        end_datetime:   end   + ":00Z",
+        start_datetime: new Date(start).toISOString(),
+        end_datetime:   new Date(end).toISOString(),
         location,
       }})
     }});
@@ -1009,7 +1029,7 @@ function setStatus(html) {{
 }}
 
 // ─── ICS Feeds ────────────────────────────────────────────────────────────
-const ICS_BASE = window.location.protocol + "//" + window.location.hostname + ":30050";
+const ICS_BASE = "{_ICS_BASE_URL}";
 
 async function loadIcsFeeds() {{
   try {{
@@ -1058,8 +1078,9 @@ async function drupalUpdateSession() {{
     const r = await fetch("/api/drupal/update", {{
       method: "POST",
       headers: {{"Content-Type": "application/json"}},
-      body: JSON.stringify({{ session_id: sessionId, title, start_datetime: start + ":00Z",
-                              end_datetime: end + ":00Z", location }}),
+      body: JSON.stringify({{ session_id: sessionId, title,
+                              start_datetime: new Date(start).toISOString(),
+                              end_datetime: new Date(end).toISOString(), location }}),
     }});
     const data = await r.json();
     if (data.ok) {{
