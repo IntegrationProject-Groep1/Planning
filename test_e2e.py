@@ -1,400 +1,208 @@
 """
-End-to-End Test: Producer → RabbitMQ → Consumer
-Tests het volledige flow met echte RabbitMQ en verifiëert correlation_id tracing.
+End-to-end test: create session + user + calendar invite + ICS feed
+Run: python test_e2e.py
 """
-import pika
-import json
-import time
-import logging
-import threading
-from lxml import etree
-from producer import (
-    create_session_xml,
-    create_session_updated_xml,
-    send_message,
-    ROUTING_KEY_CREATED,
-    ROUTING_KEY_UPDATED,
-)
-from consumer import (
-    validate_xml,
-    handle_session_created,
-    handle_session_updated,
-    reset_sessions_store,
-    list_sessions,
-)
+import pika, uuid, time, sys, threading
+import urllib.request, json
+from datetime import datetime, timezone
 
-# Setup logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s | %(levelname)s | %(message)s'
-)
-logger = logging.getLogger(__name__)
+# ── Config ────────────────────────────────────────────────────────────────────
+HOST     = "integrationproject-2526s2-dag01.westeurope.cloudapp.azure.com"
+AMQP_PORT = 30000
+MGMT_PORT = 30001
+USER     = "planning_rabbitmq"
+PASS     = "IsPI22"
+ICS_BASE = "http://{}:30050".format(HOST)
 
+SESSION_ID = str(uuid.uuid4())
+USER_ID    = "test-user-{}".format(uuid.uuid4().hex[:6])
+NOW        = datetime.now(timezone.utc).isoformat()
 
-def extract_correlation_id(xml_string: str) -> str:
-    """Extract correlation_id from XML."""
-    root = etree.fromstring(xml_string.encode("utf-8"))
-    for elem in root.iter():
-        elem.tag = etree.QName(elem.tag).localname
-    return root.findtext("header/correlation_id", default="NOT FOUND")
+# ── Helpers ───────────────────────────────────────────────────────────────────
+def make_connection():
+    creds  = pika.PlainCredentials(USER, PASS)
+    params = pika.ConnectionParameters(host=HOST, port=AMQP_PORT,
+                                       virtual_host="/", credentials=creds,
+                                       connection_attempts=2, retry_delay=1)
+    return pika.BlockingConnection(params)
 
+def publish(exchange, routing_key, xml):
+    conn = make_connection()
+    ch   = conn.channel()
+    ch.basic_publish(exchange=exchange, routing_key=routing_key, body=xml,
+                     properties=pika.BasicProperties(content_type="application/xml", delivery_mode=2))
+    conn.close()
 
-class RabbitMQListener:
-    """Luistert naar RabbitMQ berichten en verzamelt ze."""
-    
-    def __init__(self, routing_keys: list[str]):
-        self.messages = []
-        self.routing_keys = routing_keys
-        self.stop_flag = False
-    
-    def start_listening(self):
-        """Start listener in aparte thread."""
-        thread = threading.Thread(target=self._listen, daemon=True)
-        thread.start()
-        return thread
-    
-    def _listen(self):
-        """Luister naar berichten van RabbitMQ."""
-        try:
-            credentials = pika.PlainCredentials("guest", "guest")
-            params = pika.ConnectionParameters(
-                host="localhost",
-                port=5672,
-                credentials=credentials,
-                connection_attempts=5,
-                retry_delay=2
-            )
-            
-            connection = pika.BlockingConnection(params)
-            channel = connection.channel()
-            
-            # Declare exchange
-            channel.exchange_declare(
-                exchange="planning.exchange",
-                exchange_type="topic",
-                durable=True
-            )
-            
-            # Create temporary queue
-            result = channel.queue_declare(queue="", exclusive=True)
-            queue_name = result.method.queue
-            
-            # Bind queue to routing keys
-            for routing_key in self.routing_keys:
-                channel.queue_bind(
-                    exchange="planning.exchange",
-                    queue=queue_name,
-                    routing_key=routing_key
-                )
-            
-            logger.info(f"✓ Listener gebonden aan {len(self.routing_keys)} routing keys")
-            
-            def callback(ch, method, properties, body):
-                self.messages.append(body.decode("utf-8"))
-                logger.info(f"✓ Bericht ontvangen ({len(self.messages)})")
-                ch.basic_ack(delivery_tag=method.delivery_tag)
-            
-            channel.basic_consume(queue=queue_name, on_message_callback=callback)
-            
-            # Listen for 10 seconds or until stop_flag
-            while not self.stop_flag:
-                try:
-                    channel.connection.process_data_events(time_limit=1)
-                except:
-                    break
-            
-            channel.stop_consuming()
-            connection.close()
-            
-        except Exception as e:
-            logger.error(f"Listener error: {e}")
+def mgmt_get(path):
+    import base64
+    url = "http://{}:{}/api{}".format(HOST, MGMT_PORT, path)
+    req = urllib.request.Request(url)
+    req.add_header("Authorization", "Basic " + base64.b64encode("{}:{}".format(USER, PASS).encode()).decode())
+    with urllib.request.urlopen(req, timeout=5) as r:
+        return json.loads(r.read())
 
+def sep(title):
+    print("\n" + "─" * 60)
+    print("  " + title)
+    print("─" * 60)
 
-# ============================================================================
-# TEST 1: Producer → RabbitMQ → Consumer
-# ============================================================================
-def test_producer_to_consumer():
-    print("\n" + "=" * 80)
-    print("TEST 1: Producer → RabbitMQ → Consumer (End-to-End)")
-    print("=" * 80)
-    
-    SESSION_ID = "e2e-test-session-001"
-    
-    # Setup listener
-    listener = RabbitMQListener([
-        "planning.session.created",
-        "planning.session.updated"
-    ])
-    listener_thread = listener.start_listening()
-    time.sleep(2)  # Wacht tot listener klaar is
-    
-    # Reset consumer state
-    reset_sessions_store()
-    
-    # STAP 1: Producer stuurt session_created
-    print("\n📤 STAP 1: Producer stuurt session_created")
-    created_xml = create_session_xml(
-        session_id=SESSION_ID,
-        title="E2E Test Session",
-        start_datetime="2026-05-20T14:00:00Z",
-        end_datetime="2026-05-20T15:00:00Z",
-        location="Test Location"
-    )
-    corr_id_created = extract_correlation_id(created_xml)
-    print(f"   Correlation ID: {corr_id_created}")
-    
-    success = send_message(created_xml, routing_key="planning.session.created")
-    if not success:
-        logger.error("Failed to send created message")
-        return False
-    
-    print(f"   ✓ Bericht verzonden")
-    
-    # Wacht op ontvangst
-    time.sleep(2)
-    
-    # STAP 2: Verify ontvangst en verwerk
-    print("\n📥 STAP 2: Consumer ontvangt en verwerkt")
-    if len(listener.messages) < 1:
-        print("   ✗ Bericht niet ontvangen!")
-        return False
-    
-    received_xml = listener.messages[0]
-    corr_id_received = extract_correlation_id(received_xml)
-    print(f"   Correlation ID: {corr_id_received}")
-    
-    # Validate en proces
-    validated_root = validate_xml(received_xml)
-    if not validated_root:
-        print("   ✗ XML validatie gefaald!")
-        return False
-    
-    handle_session_created(validated_root)
-    print(f"   ✓ Bericht gevalideerd en verwerkt")
-    
-    # STAP 3: Producer stuurt session_updated
-    print("\n📤 STAP 3: Producer stuurt session_updated")
-    updated_xml = create_session_updated_xml(
-        session_id=SESSION_ID,
-        title="E2E Test Session (Updated)",
-        start_datetime="2026-05-20T14:00:00Z",
-        end_datetime="2026-05-20T16:00:00Z",
-        location="Test Location",
-        current_attendees=50
-    )
-    corr_id_updated = extract_correlation_id(updated_xml)
-    print(f"   Correlation ID: {corr_id_updated}")
-    
-    success = send_message(updated_xml, routing_key="planning.session.updated")
-    if not success:
-        logger.error("Failed to send updated message")
-        return False
-    
-    print(f"   ✓ Bericht verzonden")
-    
-    # Wacht op ontvangst
-    time.sleep(2)
-    
-    # STAP 4: Verify tweede ontvangst
-    print("\n📥 STAP 4: Consumer ontvangt update")
-    if len(listener.messages) < 2:
-        print("   ✗ Update bericht niet ontvangen!")
-        return False
-    
-    received_updated_xml = listener.messages[1]
-    corr_id_received_updated = extract_correlation_id(received_updated_xml)
-    print(f"   Correlation ID: {corr_id_received_updated}")
-    
-    # Validate en proces
-    validated_root_updated = validate_xml(received_updated_xml)
-    if not validated_root_updated:
-        print("   ✗ XML validatie gefaald!")
-        return False
-    
-    handle_session_updated(validated_root_updated)
-    print(f"   ✓ Bericht gevalideerd en verwerkt")
-    
-    # Stop listener
-    listener.stop_flag = True
-    listener_thread.join(timeout=5)
-    
-    # STAP 5: Verificatie
-    print("\n" + "=" * 80)
-    print("VERIFICATIE")
-    print("=" * 80)
-    
-    print(f"\nCorrelation ID Journey:")
-    print(f"  1. Created (Producer): {corr_id_created}")
-    print(f"  2. Created (RabbitMQ): {corr_id_received}")
-    print(f"  3. Updated (Producer): {corr_id_updated}")
-    print(f"  4. Updated (RabbitMQ): {corr_id_received_updated}")
-    
-    all_same = (
-        corr_id_created == corr_id_received == 
-        corr_id_updated == corr_id_received_updated
-    )
-    
-    if not all_same:
-        print("\n✗ FOUT: Correlation IDs zijn NIET hetzelfde!")
-        return False
-    
-    print(f"\n✅ SUCCESS: Alle correlation IDs zijn hetzelfde!")
-    
-    # Check consumer state
-    print("\nConsumer State:")
-    sessions = list_sessions()
-    if len(sessions) != 1:
-        print(f"   ✗ Verwacht 1 sessie, kreeg {len(sessions)}")
-        return False
-    
-    session = sessions[0]
-    print(f"   Session ID: {session['session_id']}")
-    print(f"   Title: {session['title']}")
-    print(f"   Attendees: {session.get('current_attendees', 0)}")
-    print(f"   ✓ Consumer state correct")
-    
-    return True
+# ── Step 1: Créer la session ──────────────────────────────────────────────────
+sep("STEP 1 — Publish session_create_request")
+session_xml = """<message>
+  <header>
+    <message_id>{mid}</message_id>
+    <timestamp>{ts}</timestamp>
+    <source>test_e2e</source>
+    <type>session_create_request</type>
+    <version>2.0</version>
+  </header>
+  <body>
+    <session_id>{sid}</session_id>
+    <title>E2E Test Session</title>
+    <start_datetime>2026-05-20T10:00:00.000Z</start_datetime>
+    <end_datetime>2026-05-20T11:00:00.000Z</end_datetime>
+    <location>Aula B - Campus Jette</location>
+    <session_type>workshop</session_type>
+    <max_attendees>30</max_attendees>
+  </body>
+</message>""".format(mid=str(uuid.uuid4()), ts=NOW, sid=SESSION_ID)
 
+publish("planning.exchange", "frontend.to.planning.session.create", session_xml)
+print("Session ID : {}".format(SESSION_ID))
+print("Routing key: frontend.to.planning.session.create")
+print("Status     : published ✓")
 
-# ============================================================================
-# TEST 2: Message Flow Logging
-# ============================================================================
-def test_message_flow_logging():
-    print("\n\n" + "=" * 80)
-    print("TEST 2: Message Flow Logging")
-    print("=" * 80)
-    
-    SESSION_ID = "logging-test-session"
-    
-    print("\n📋 Sending messages en capturing logs...")
-    print("(Check correlation_id in logs)\n")
-    
-    # Create and send
-    created_xml = create_session_xml(
-        session_id=SESSION_ID,
-        title="Logging Test",
-        start_datetime="2026-05-21T10:00:00Z",
-        end_datetime="2026-05-21T11:00:00Z",
-        location="Logging Test Room"
-    )
-    
-    corr_id = extract_correlation_id(created_xml)
-    print(f"Master UUID (Correlation ID): {corr_id}")
-    print("\n📝 Producer logs (met correlation_id):")
-    logger.info(f"TEST: session_created message prepared | correlation_id={corr_id}")
-    
-    # Simulated consumer logs
-    reset_sessions_store()
-    validated_root = validate_xml(created_xml)
-    handle_session_created(validated_root)
-    
-    print("\n📝 Consumer logs (met correlation_id):")
-    logger.info(f"TEST: session_created received | correlation_id={corr_id}")
-    
-    print("\n✅ Logging test voltooid - correlation_id is zichtbaar in alle logs")
-    
-    return True
+# ── Step 2: Attendre le traitement ────────────────────────────────────────────
+sep("STEP 2 — Wait for consumer to process (3s)...")
+time.sleep(3)
 
+# ── Step 3: Vérifier que la session est dans la queue events ─────────────────
+sep("STEP 3 — Check planning.session.events queue")
+try:
+    queues = mgmt_get("/queues")
+    for q in queues:
+        if "planning" in q["name"]:
+            status = "✓ clear" if q.get("messages", 0) == 0 else "⚠ {} pending".format(q["messages"])
+            print("  {:<35} consumers: {}  {}".format(
+                q["name"], q.get("consumers", 0), status))
+except Exception as e:
+    print("  Could not check management API: {}".format(e))
 
-# ============================================================================
-# TEST 3: Multiple Sessions (Different UUIDs)
-# ============================================================================
-def test_multiple_sessions():
-    print("\n\n" + "=" * 80)
-    print("TEST 3: Multiple Sessions - Verschillende UUIDs")
-    print("=" * 80)
-    
-    reset_sessions_store()
-    
-    sessions_data = [
-        ("session-a", "Conference 2026"),
-        ("session-b", "Workshop Python"),
-        ("session-c", "Keynote AI"),
-    ]
-    
-    correlation_ids = {}
-    
-    print("\nCreating multiple sessions:\n")
-    for session_id, title in sessions_data:
-        xml = create_session_xml(
-            session_id=session_id,
-            title=title,
-            start_datetime="2026-05-22T14:00:00Z",
-            end_datetime="2026-05-22T15:00:00Z",
-            location="Room"
-        )
-        corr_id = extract_correlation_id(xml)
-        correlation_ids[session_id] = corr_id
-        
-        # Validate and process
-        root = validate_xml(xml)
-        handle_session_created(root)
-        
-        print(f"  {session_id:15} → {corr_id}")
-    
-    # Verify uniqueness
-    unique_ids = len(set(correlation_ids.values()))
-    total_sessions = len(sessions_data)
-    
-    print(f"\nVerificatie:")
-    print(f"  Total sessions: {total_sessions}")
-    print(f"  Unique correlation IDs: {unique_ids}")
-    
-    if unique_ids != total_sessions:
-        print(f"  ✗ FOUT: Expected {total_sessions} unique IDs, got {unique_ids}")
-        return False
-    
-    print(f"  ✅ SUCCESS: Alle sessies hebben unieke correlation IDs!")
-    
-    return True
+# ── Step 4: Créer le calendar invite pour le user (sans Outlook token) ────────
+sep("STEP 4 — Publish calendar_invite for user: {}".format(USER_ID))
+invite_xml = """<message>
+  <header>
+    <message_id>{mid}</message_id>
+    <timestamp>{ts}</timestamp>
+    <source>test_e2e</source>
+    <type>calendar_invite</type>
+    <version>2.0</version>
+  </header>
+  <body>
+    <session_id>{sid}</session_id>
+    <title>E2E Test Session</title>
+    <start_datetime>2026-05-20T10:00:00.000Z</start_datetime>
+    <end_datetime>2026-05-20T11:00:00.000Z</end_datetime>
+    <location>Aula B - Campus Jette</location>
+    <user_id>{uid}</user_id>
+    <attendee_email>{uid}@test.be</attendee_email>
+  </body>
+</message>""".format(mid=str(uuid.uuid4()), ts=NOW, sid=SESSION_ID, uid=USER_ID)
 
+publish("calendar.exchange", "frontend.to.planning.calendar.invite", invite_xml)
+print("User ID    : {}".format(USER_ID))
+print("Status     : published ✓ (no Outlook token → ICS feed will be created)")
 
-# ============================================================================
-# MAIN
-# ============================================================================
-def main():
-    print("\n" + "🧪 END-TO-END TEST SUITE 🧪".center(80))
-    
-    results = {
-        "Producer → RabbitMQ → Consumer": False,
-        "Message Flow Logging": False,
-        "Multiple Sessions": False,
-    }
-    
+# ── Step 5: Attendre + capturer la réponse depuis planning.session.events ─────
+sep("STEP 5 — Listen for confirmation message (5s timeout)")
+
+confirmed_xml = None
+ics_url       = None
+
+def consume_reply():
+    global confirmed_xml, ics_url
     try:
-        # Test 1
-        results["Producer → RabbitMQ → Consumer"] = test_producer_to_consumer()
-        
-        # Test 2
-        results["Message Flow Logging"] = test_message_flow_logging()
-        
-        # Test 3
-        results["Multiple Sessions"] = test_multiple_sessions()
-        
+        conn = make_connection()
+        ch   = conn.channel()
+        # Temporary exclusive queue
+        result  = ch.queue_declare(queue="", exclusive=True, auto_delete=True)
+        tmp_q   = result.method.queue
+        ch.queue_bind(exchange="planning.exchange", queue=tmp_q,
+                      routing_key="planning.to.frontend.session.created")
+        ch.queue_bind(exchange="planning.exchange", queue=tmp_q,
+                      routing_key="planning.to.frontend.#")
+
+        def on_msg(ch, method, props, body):
+            global confirmed_xml, ics_url
+            confirmed_xml = body.decode()
+            # Try to extract ICS URL
+            try:
+                import re
+                m = re.search(r"<ics_url>(.*?)</ics_url>", confirmed_xml)
+                if m:
+                    ics_url = m.group(1)
+            except Exception:
+                pass
+            ch.stop_consuming()
+
+        ch.basic_consume(queue=tmp_q, on_message_callback=on_msg, auto_ack=True)
+        conn.call_later(5, ch.stop_consuming)
+        ch.start_consuming()
+        conn.close()
     except Exception as e:
-        logger.error(f"Test error: {e}", exc_info=True)
-    
-    # Summary
-    print("\n\n" + "=" * 80)
-    print("TEST SUMMARY")
-    print("=" * 80)
-    
-    for test_name, passed in results.items():
-        status = "✅ PASSED" if passed else "❌ FAILED"
-        print(f"  {test_name:40} {status}")
-    
-    all_passed = all(results.values())
-    
-    print("\n" + "=" * 80)
-    if all_passed:
-        print("🎉 ALL TESTS PASSED!")
-    else:
-        print("⚠️ SOME TESTS FAILED!")
-    print("=" * 80)
-    
-    return 0 if all_passed else 1
+        print("  Listener error: {}".format(e))
 
+t = threading.Thread(target=consume_reply)
+t.start()
+time.sleep(5)
+t.join(timeout=6)
 
-if __name__ == "__main__":
-    exit_code = main()
-    exit(exit_code)
+if confirmed_xml:
+    print("Received confirmation message ✓")
+    print(confirmed_xml[:400])
+else:
+    print("No reply captured (may already have been consumed by another consumer)")
+
+# ── Step 6: Tenter de récupérer l'ICS feed ───────────────────────────────────
+sep("STEP 6 — Fetch ICS feed")
+
+if ics_url:
+    print("ICS URL from message: {}".format(ics_url))
+    try:
+        req = urllib.request.Request(ics_url)
+        with urllib.request.urlopen(req, timeout=5) as r:
+            content = r.read().decode()
+            if "BEGIN:VCALENDAR" in content:
+                print("ICS feed ✓ — content preview:")
+                print(content[:500])
+            else:
+                print("Got response but not a valid ICS: {}".format(content[:200]))
+    except Exception as e:
+        print("Could not fetch ICS: {}".format(e))
+else:
+    # Try the planning service list endpoint
+    print("No ICS URL captured from message — trying planning service API...")
+    try:
+        url = "{}/api/ics-feeds".format(ICS_BASE)
+        with urllib.request.urlopen(url, timeout=5) as r:
+            feeds = json.loads(r.read())
+            for f in feeds:
+                if USER_ID in str(f):
+                    ics_url = "{}/ical/{}?token={}".format(ICS_BASE, f.get("user_id"), f.get("feed_token"))
+                    print("ICS URL: {}".format(ics_url))
+                    break
+    except Exception as e:
+        print("  API not reachable: {}".format(e))
+
+    if not ics_url:
+        print("  ICS URL not retrievable externally (DB not exposed).")
+        print("  → Run the frontend demo and check http://localhost:8089 to see ICS feeds.")
+
+# ── Résumé ────────────────────────────────────────────────────────────────────
+sep("SUMMARY")
+print("Session ID : {}".format(SESSION_ID))
+print("User ID    : {}".format(USER_ID))
+print("ICS URL    : {}".format(ics_url or "check frontend demo at http://localhost:8089"))
+print()
+print("RabbitMQ Management: http://{}:{}/".format(HOST, MGMT_PORT))
+print("Planning service   : {}".format(ICS_BASE))

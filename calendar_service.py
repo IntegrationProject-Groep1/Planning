@@ -348,8 +348,9 @@ class CalendarInviteService:
 
             query = """
             INSERT INTO calendar_invites
-            (message_id, timestamp, source, type, session_id, title, start_datetime, end_datetime, location, status, user_id)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            (message_id, timestamp, source, type, session_id, title, start_datetime, end_datetime, location, user_id)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (message_id) DO NOTHING
             """
 
             cursor.execute(
@@ -364,7 +365,6 @@ class CalendarInviteService:
                     start_datetime,
                     end_datetime,
                     location,
-                    status,
                     user_id,
                 ),
             )

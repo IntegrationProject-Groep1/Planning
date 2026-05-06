@@ -40,8 +40,14 @@ from xml_handlers import (
     build_session_delete_request_xml,
 )
 
-load_dotenv(pathlib.Path(__file__).parent.parent / ".env.local", override=True)
-load_dotenv(pathlib.Path(__file__).parent.parent / ".env")
+_use_remote = "--remote" in sys.argv
+if _use_remote:
+    sys.argv.remove("--remote")
+    load_dotenv(pathlib.Path(__file__).parent.parent / ".env")
+    print("[frontend_demo] --remote mode: using .env only (real RabbitMQ + DB)")
+else:
+    load_dotenv(pathlib.Path(__file__).parent.parent / ".env.local", override=True)
+    load_dotenv(pathlib.Path(__file__).parent.parent / ".env")
 
 logger = logging.getLogger(__name__)
 
