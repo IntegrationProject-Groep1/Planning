@@ -23,21 +23,40 @@ RABBITMQ_USER = os.getenv("RABBITMQ_USER")
 RABBITMQ_PASS = os.getenv("RABBITMQ_PASS")
 RABBITMQ_VHOST = os.getenv("RABBITMQ_VHOST", "/")
 
-# Exchange published by the sending team; queue prefixed with our team name
-EXCHANGE_NAME = os.getenv("CALENDAR_EXCHANGE", "calendar.exchange")
+# Exchanges published by the sending teams; queues prefixed with our team name.
+CALENDAR_EXCHANGE = os.getenv("CALENDAR_EXCHANGE", "calendar.exchange")
+PLANNING_EXCHANGE = os.getenv("PLANNING_EXCHANGE", "planning.exchange")
 ROUTING_KEY_VIEW_RESPONSE = "planning.session.view.response"
-ROUTING_KEYS = [
+CALENDAR_ROUTING_KEYS = [
     key.strip()
     for key in os.getenv(
-        "ROUTING_KEYS",
-        "calendar.invite,planning.session.created,planning.session.updated,planning.session.deleted,planning.session.view.request,crm.to.planning.session_registration_confirmed",
+        "CALENDAR_ROUTING_KEYS",
+        "frontend.to.planning.calendar.invite",
     ).split(",")
     if key.strip()
 ]
-QUEUE_NAME = "planning.calendar.invite"
+SESSION_ROUTING_KEYS = [
+    key.strip()
+    for key in os.getenv(
+        "SESSION_ROUTING_KEYS",
+        (
+            "frontend.to.planning.session.create,"
+            "frontend.to.planning.session.update,"
+            "frontend.to.planning.session.delete,"
+            "frontend.to.planning.session.view,"
+            "crm.to.planning.session_registration_confirmed,"
+            "crm.to.planning.cancel_registration,"
+            "frontend.to.planning.cancel_registration"
+        ),
+    ).split(",")
+    if key.strip()
+]
+CALENDAR_QUEUE_NAME = os.getenv("CALENDAR_QUEUE_NAME", "planning.calendar.invite")
+SESSION_QUEUE_NAME = os.getenv("SESSION_QUEUE_NAME", "planning.session.events")
 
 REQUIRED_HEADER_FIELDS = {"message_id", "timestamp", "source", "type"}
 REQUIRED_BODY_FIELDS_BY_TYPE = {
+    "calendar_invite": {"identity_uuid", "session_id", "title", "start_datetime", "end_datetime", "attendee_email"},
     "calendar.invite": {"session_id", "title", "start_datetime", "end_datetime"},
     "session_created": {"session_id", "title", "start_datetime", "end_datetime"},
     "session_updated": {"session_id", "title", "start_datetime", "end_datetime"},
@@ -50,6 +69,7 @@ REQUIRED_BODY_FIELDS_BY_TYPE = {
     "session_delete_request": {"session_id"},
 }
 _XSD_BY_TYPE = {
+    "calendar_invite": "calendar_invite.xsd",
     "calendar.invite": "calendar_invite.xsd",
     "session_created": "session_created.xsd",
     "session_updated": "session_updated.xsd",
@@ -233,7 +253,7 @@ def reset_sessions_store() -> None:
 
 
 def handle_calendar_invite(root: etree._Element):
-    """Process a validated calendar.invite message."""
+    """Process a validated calendar invite message."""
     header = root.find("header")
     body = root.find("body")
 
@@ -247,7 +267,7 @@ def handle_calendar_invite(root: etree._Element):
     location = body.findtext("location", default="")
 
     logger.info(
-        "calendar.invite received | correlation_id=%s | message_id=%s | source=%s | session_id=%s | title=%s | %s -> %s | location=%s",
+        "calendar_invite received | correlation_id=%s | message_id=%s | source=%s | session_id=%s | title=%s | %s -> %s | location=%s",
         correlation_id, message_id, source, session_id, title, start_datetime, end_datetime, location,
     )
 
@@ -335,7 +355,7 @@ def handle_session_view_request(root: etree._Element, channel) -> None:
     )
 
     channel.basic_publish(
-        exchange=EXCHANGE_NAME,
+        exchange=PLANNING_EXCHANGE,
         routing_key=ROUTING_KEY_VIEW_RESPONSE,
         body=response_xml,
         properties=pika.BasicProperties(
@@ -443,7 +463,7 @@ def on_message(channel, method, properties, body: bytes):
 
     message_type = root.find("header").findtext("type", default="")
 
-    if message_type == "calendar.invite":
+    if message_type in ("calendar_invite", "calendar.invite"):
         handle_calendar_invite(root)
     elif message_type == "session_created":
         handle_session_created(root)
@@ -489,25 +509,45 @@ def start_consumer():
     channel = connection.channel()
 
     channel.exchange_declare(
-        exchange=EXCHANGE_NAME,
+        exchange=CALENDAR_EXCHANGE,
+        exchange_type="topic",
+        durable=True,
+    )
+    channel.exchange_declare(
+        exchange=PLANNING_EXCHANGE,
         exchange_type="topic",
         durable=True,
     )
 
-    channel.queue_declare(queue=QUEUE_NAME, durable=True)
-    for routing_key in ROUTING_KEYS:
+    channel.queue_declare(queue=CALENDAR_QUEUE_NAME, durable=True)
+    for routing_key in CALENDAR_ROUTING_KEYS:
         channel.queue_bind(
-            queue=QUEUE_NAME,
-            exchange=EXCHANGE_NAME,
+            queue=CALENDAR_QUEUE_NAME,
+            exchange=CALENDAR_EXCHANGE,
+            routing_key=routing_key,
+        )
+
+    channel.queue_declare(queue=SESSION_QUEUE_NAME, durable=True)
+    for routing_key in SESSION_ROUTING_KEYS:
+        channel.queue_bind(
+            queue=SESSION_QUEUE_NAME,
+            exchange=PLANNING_EXCHANGE,
             routing_key=routing_key,
         )
 
     channel.basic_qos(prefetch_count=1)
-    channel.basic_consume(queue=QUEUE_NAME, on_message_callback=on_message)
+    channel.basic_consume(queue=CALENDAR_QUEUE_NAME, on_message_callback=on_message)
+    channel.basic_consume(queue=SESSION_QUEUE_NAME, on_message_callback=on_message)
 
     logger.info(
-        "Consumer started | exchange=%s | queue=%s | routing_keys=%s | vhost=%s",
-        EXCHANGE_NAME, QUEUE_NAME, ROUTING_KEYS, RABBITMQ_VHOST,
+        "Consumer started | calendar_exchange=%s queue=%s keys=%s | planning_exchange=%s queue=%s keys=%s | vhost=%s",
+        CALENDAR_EXCHANGE,
+        CALENDAR_QUEUE_NAME,
+        CALENDAR_ROUTING_KEYS,
+        PLANNING_EXCHANGE,
+        SESSION_QUEUE_NAME,
+        SESSION_ROUTING_KEYS,
+        RABBITMQ_VHOST,
     )
     channel.start_consuming()
 
