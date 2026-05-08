@@ -14,31 +14,76 @@ services:
     networks:
       - planning_network
 
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    ports:
+      - "30051:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - planning_network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD}
+      PGADMIN_SERVER_JSON_FILE: /pgadmin4/servers.json
+    volumes:
+      - ./pgadmin/servers.json:/pgadmin4/servers.json:ro
+      - ./pgadmin/pgpass:/pgpass:ro
+    ports:
+      - "30052:80"
+    depends_on:
+      - db
+    networks:
+      - planning_network
+
+  migrate:
+    image: postgres:16-alpine
+    env_file:
+      - ${ENV_FILE:-.env}
+    volumes:
+      - ./migrations:/migrations:ro
+    command: >
+      sh -c "psql postgresql://$${POSTGRES_USER}:$${POSTGRES_PASSWORD}@db:5432/$${POSTGRES_DB} -f /migrations/001_initial.sql &&
+             psql postgresql://$${POSTGRES_USER}:$${POSTGRES_PASSWORD}@db:5432/$${POSTGRES_DB} -f /migrations/002_planning_schema.sql &&
+             psql postgresql://$${POSTGRES_USER}:$${POSTGRES_PASSWORD}@db:5432/$${POSTGRES_DB} -f /migrations/003_graph_sync.sql &&
+             psql postgresql://$${POSTGRES_USER}:$${POSTGRES_PASSWORD}@db:5432/$${POSTGRES_DB} -f /migrations/004_user_tokens.sql &&
+             psql postgresql://$${POSTGRES_USER}:$${POSTGRES_PASSWORD}@db:5432/$${POSTGRES_DB} -f /migrations/005_ics_feeds.sql &&
+             psql postgresql://$${POSTGRES_USER}:$${POSTGRES_PASSWORD}@db:5432/$${POSTGRES_DB} -f /migrations/006_graph_sync_per_user.sql &&
+             echo 'Migrations completed.'"
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - planning_network
+    restart: "no"
+
   planning-service:
     build: .
     env_file:
       - ${ENV_FILE:-.env}
     ports:
       - "30050:30050"
+    depends_on:
+      - db
+      - migrate
     networks:
       - planning_network
 
-
-# The sidecar container is currently commented out. It can be used for health checks or monitoring on VM.
- # sidecar:
- #   image: ghcr.io/integrationproject-groep1/heartbeat:latest
- #   env_file:
- #     - ${ENV_FILE:-.env}
- #   environment:
- #     - SYSTEM_NAME=planning
- #     - TARGETS=planning-service:30050
- #   depends_on:
- #     - planning-service
- #   networks:
- #     - planning_network
-
 volumes:
   rabbitmq_data:
+  postgres_data:
 
 networks:
   planning_network:
