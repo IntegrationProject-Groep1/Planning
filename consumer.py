@@ -623,7 +623,10 @@ def start_consumer():
         durable=True,
     )
 
-    channel.queue_declare(queue=CALENDAR_QUEUE_NAME, durable=True)
+    _dlx = os.getenv("PLANNING_DLX", "planning.dlx")
+    _queue_args = {"x-dead-letter-exchange": _dlx}
+
+    channel.queue_declare(queue=CALENDAR_QUEUE_NAME, durable=True, arguments=_queue_args)
     for routing_key in CALENDAR_ROUTING_KEYS:
         channel.queue_bind(
             queue=CALENDAR_QUEUE_NAME,
@@ -631,7 +634,7 @@ def start_consumer():
             routing_key=routing_key,
         )
 
-    channel.queue_declare(queue=SESSION_QUEUE_NAME, durable=True)
+    channel.queue_declare(queue=SESSION_QUEUE_NAME, durable=True, arguments=_queue_args)
     for routing_key in SESSION_ROUTING_KEYS:
         channel.queue_bind(
             queue=SESSION_QUEUE_NAME,
