@@ -396,7 +396,7 @@ def build_session_created_xml(
     etree.SubElement(header, "timestamp").text = datetime.now(timezone.utc).isoformat()
     etree.SubElement(header, "source").text = "planning"
     etree.SubElement(header, "type").text = "session_created"
-    etree.SubElement(header, "version").text = "2.0"
+    etree.SubElement(header, "version").text = "1.0"
     etree.SubElement(header, "correlation_id").text = correlation_id or str(uuid.uuid4())
 
     # Body
@@ -728,7 +728,7 @@ def parse_message(xml_bytes: bytes) -> Optional[Union[
 
         msg_type = _get_text(header_elem, "type")
 
-        if msg_type == "calendar_invite":
+        if msg_type in ("calendar_invite", "calendar.invite"):
             return parse_calendar_invite(xml_bytes)
         elif msg_type == "session_created":
             return parse_session_created(xml_bytes)

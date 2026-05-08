@@ -18,6 +18,7 @@ from xml_models import (
     SessionDeletedMessage,
     SessionCreateRequestMessage,
 )
+from graph_service import GraphService
 
 load_dotenv()
 
@@ -311,6 +312,14 @@ def handle_calendar_invite(msg: CalendarInviteMessage, channel, delivery_tag: in
             title=msg.body.title,
             start_datetime=msg.body.start_datetime,
             end_datetime=msg.body.end_datetime,
+        )
+        GraphService.sync_created(
+            session_id=msg.body.session_id,
+            title=msg.body.title,
+            start_datetime=msg.body.start_datetime,
+            end_datetime=msg.body.end_datetime,
+            location=msg.body.location or "",
+            user_id=msg.body.user_id,
         )
         MessageLog.update_message_status(msg.header.message_id, "processed")
         channel.basic_ack(delivery_tag=delivery_tag)
