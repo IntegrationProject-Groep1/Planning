@@ -19,7 +19,7 @@ COPY graph_client.py .
 COPY token_service.py .
 COPY xsd_validator.py .
 COPY ics_service.py .
-COPY schemas/ schemas/
+COPY xsd/ xsd/
 
 EXPOSE 30050
 
