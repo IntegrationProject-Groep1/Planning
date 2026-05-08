@@ -3,6 +3,7 @@ import os
 import logging
 import uuid
 import json
+import time
 from functools import lru_cache
 from pathlib import Path
 from datetime import datetime, timezone
@@ -88,7 +89,21 @@ _XSD_BY_TYPE = {
     "session_updated": "session_updated.xsd",
     "session_deleted": "session_deleted.xsd",
     "session_view_request": "session_view_request.xsd",
+    "session_view_response": "session_view_response.xsd",
 }
+
+_REQUIRED_BODY_FIELDS: dict[str, set[str]] = {
+    "session_created": {"session_id", "title", "start_datetime", "end_datetime"},
+    "session_updated": {"session_id", "title", "start_datetime", "end_datetime"},
+    "session_deleted": {"session_id"},
+    "session_view_request": set(),
+    "session_view_response": {"request_message_id", "status", "session_count"},
+}
+
+ROUTING_KEY_TO_FRONTEND_CREATED = "planning.to.frontend.session.created"
+ROUTING_KEY_TO_FRONTEND_UPDATED = "planning.to.frontend.session.updated"
+ROUTING_KEY_TO_FRONTEND_DELETED = "planning.to.frontend.session.deleted"
+ROUTING_KEY_TO_FRONTEND_VIEW_RESPONSE = "planning.to.frontend.session.view.response"
 
 
 def _require_env(name: str, value: str | None) -> str:
@@ -357,6 +372,145 @@ def send_message(xml_message: str, routing_key: str = ROUTING_KEY_CREATED):
         logger.error("Error sending message: %s", e, exc_info=True)
         return False
 
+
+
+def _publish_message(xml_string: str, routing_key: str) -> bool:
+    """Low-level RabbitMQ publish without retry or validation."""
+    return send_message(xml_string, routing_key=routing_key)
+
+
+def _publish_with_validation_and_retry(
+    xml_string: str,
+    routing_key: str,
+    message_type: str,
+    max_retries: int = 3,
+    initial_delay: float = 1.0,
+) -> bool:
+    """Validate XML structure, then publish with exponential-backoff retry."""
+    if message_type not in _XSD_BY_TYPE:
+        logger.error("Unknown message type for publishing: %s", message_type)
+        return False
+
+    try:
+        root = _strip_ns(etree.fromstring(xml_string.encode("utf-8") if isinstance(xml_string, str) else xml_string))
+        body = root.find("body")
+        required = _REQUIRED_BODY_FIELDS.get(message_type, set())
+        if body is None and required:
+            logger.error("Missing <body> in XML for type '%s'", message_type)
+            return False
+        if body is not None:
+            present = {child.tag for child in body}
+            missing = required - present
+            if missing:
+                logger.error("Missing required body fields for '%s': %s", message_type, missing)
+                return False
+    except etree.XMLSyntaxError as e:
+        logger.error("Malformed XML: %s", e)
+        return False
+
+    delay = initial_delay
+    for attempt in range(max_retries):
+        if _publish_message(xml_string, routing_key):
+            return True
+        if attempt < max_retries - 1:
+            time.sleep(delay)
+            delay *= 2
+    return False
+
+
+def publish_session_created(
+    session_id: str,
+    title: str,
+    start_datetime: str,
+    end_datetime: str,
+    location: str = "",
+    max_attendees: int = 120,
+    current_attendees: int = 0,
+    correlation_id: str | None = None,
+    session_type: str = "keynote",
+    status: str = "published",
+) -> bool:
+    master_uuid = correlation_id or MasterUUIDManager.get_or_create(session_id)
+    root, body = _build_message_root("session_created", correlation_id=master_uuid)
+    etree.SubElement(body, "session_id").text = session_id
+    etree.SubElement(body, "title").text = title
+    etree.SubElement(body, "start_datetime").text = start_datetime
+    etree.SubElement(body, "end_datetime").text = end_datetime
+    etree.SubElement(body, "location").text = location
+    etree.SubElement(body, "session_type").text = session_type
+    etree.SubElement(body, "status").text = status
+    etree.SubElement(body, "max_attendees").text = str(max_attendees)
+    etree.SubElement(body, "current_attendees").text = str(current_attendees)
+    xml = etree.tostring(root, encoding="unicode", pretty_print=True)
+    return _publish_with_validation_and_retry(xml, ROUTING_KEY_TO_FRONTEND_CREATED, "session_created")
+
+
+def publish_session_updated(
+    session_id: str,
+    title: str,
+    start_datetime: str,
+    end_datetime: str,
+    location: str = "",
+    session_type: str = "keynote",
+    status: str = "published",
+    max_attendees: int | None = None,
+    current_attendees: int | None = None,
+    correlation_id: str | None = None,
+) -> bool:
+    master_uuid = correlation_id or MasterUUIDManager.get(session_id) or MasterUUIDManager.get_or_create(session_id)
+    root, body = _build_message_root("session_updated", correlation_id=master_uuid)
+    etree.SubElement(body, "session_id").text = session_id
+    etree.SubElement(body, "title").text = title
+    etree.SubElement(body, "start_datetime").text = start_datetime
+    etree.SubElement(body, "end_datetime").text = end_datetime
+    etree.SubElement(body, "location").text = location
+    etree.SubElement(body, "session_type").text = session_type
+    etree.SubElement(body, "status").text = status
+    if max_attendees is not None:
+        etree.SubElement(body, "max_attendees").text = str(max_attendees)
+    if current_attendees is not None:
+        etree.SubElement(body, "current_attendees").text = str(current_attendees)
+    xml = etree.tostring(root, encoding="unicode", pretty_print=True)
+    return _publish_with_validation_and_retry(xml, ROUTING_KEY_TO_FRONTEND_UPDATED, "session_updated")
+
+
+def publish_session_deleted(
+    session_id: str,
+    reason: str | None = None,
+    deleted_by: str | None = None,
+    correlation_id: str | None = None,
+) -> bool:
+    master_uuid = correlation_id or MasterUUIDManager.get(session_id) or MasterUUIDManager.get_or_create(session_id)
+    root, body = _build_message_root("session_deleted", correlation_id=master_uuid)
+    etree.SubElement(body, "session_id").text = session_id
+    if reason:
+        etree.SubElement(body, "reason").text = reason
+    if deleted_by:
+        etree.SubElement(body, "deleted_by").text = deleted_by
+    xml = etree.tostring(root, encoding="unicode", pretty_print=True)
+    return _publish_with_validation_and_retry(xml, ROUTING_KEY_TO_FRONTEND_DELETED, "session_deleted")
+
+
+def publish_session_view_response(
+    request_message_id: str,
+    requested_session_id: str | None,
+    status: str,
+    sessions: list,
+    correlation_id: str | None = None,
+) -> bool:
+    root, body = _build_message_root("session_view_response", correlation_id=correlation_id)
+    etree.SubElement(body, "request_message_id").text = request_message_id
+    if requested_session_id:
+        etree.SubElement(body, "requested_session_id").text = requested_session_id
+    etree.SubElement(body, "status").text = status
+    etree.SubElement(body, "session_count").text = str(len(sessions))
+    sessions_elem = etree.SubElement(body, "sessions")
+    for session in sessions:
+        session_elem = etree.SubElement(sessions_elem, "session")
+        for key, value in session.items():
+            etree.SubElement(session_elem, key).text = str(value)
+    xml = etree.tostring(root, encoding="unicode", pretty_print=True)
+    return _publish_with_validation_and_retry(xml, ROUTING_KEY_TO_FRONTEND_VIEW_RESPONSE, "session_view_response")
 
 
 def main():

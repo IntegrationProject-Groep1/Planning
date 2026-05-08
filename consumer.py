@@ -11,6 +11,13 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import urlparse
 from lxml import etree
 from dotenv import load_dotenv
+import producer
+from xml_models import (
+    CalendarInviteMessage,
+    SessionCreatedMessage,
+    SessionDeletedMessage,
+    SessionCreateRequestMessage,
+)
 
 load_dotenv()
 
@@ -84,6 +91,38 @@ _XSD_BY_TYPE = {
 
 _SESSIONS: dict[str, dict[str, str | int]] = {}
 _SESSIONS_LOCK = threading.Lock()
+
+
+class MessageLog:
+    @staticmethod
+    def log_message(message_id: str, message_type: str, source: str = "", **kwargs) -> bool:
+        logger.debug("MessageLog.log_message: %s %s", message_type, message_id)
+        return True
+
+    @staticmethod
+    def update_message_status(message_id: str, status: str, **kwargs) -> None:
+        logger.debug("MessageLog.update_message_status: %s -> %s", message_id, status)
+
+
+class SessionService:
+    @staticmethod
+    def create_or_update(session_id: str, **kwargs) -> bool:
+        logger.debug("SessionService.create_or_update: %s", session_id)
+        return True
+
+
+class CalendarInviteService:
+    @staticmethod
+    def create(**kwargs) -> bool:
+        logger.debug("CalendarInviteService.create")
+        return True
+
+
+class SessionEventService:
+    @staticmethod
+    def log_event(**kwargs) -> bool:
+        logger.debug("SessionEventService.log_event")
+        return True
 
 
 def _require_env(name: str, value: str | None) -> str:
@@ -252,88 +291,93 @@ def reset_sessions_store() -> None:
         _SESSIONS.clear()
 
 
-def handle_calendar_invite(root: etree._Element):
-    """Process a validated calendar invite message."""
-    header = root.find("header")
-    body = root.find("body")
+def handle_calendar_invite(msg: CalendarInviteMessage, channel, delivery_tag: int) -> None:
+    """Process a validated calendar.invite message."""
+    is_new = MessageLog.log_message(msg.header.message_id, "calendar.invite", source=msg.header.source)
+    if not is_new:
+        channel.basic_ack(delivery_tag=delivery_tag)
+        return
+    try:
+        SessionService.create_or_update(
+            session_id=msg.body.session_id,
+            title=msg.body.title,
+            start_datetime=msg.body.start_datetime,
+            end_datetime=msg.body.end_datetime,
+            location=msg.body.location,
+        )
+        CalendarInviteService.create(
+            message_id=msg.header.message_id,
+            session_id=msg.body.session_id,
+            title=msg.body.title,
+            start_datetime=msg.body.start_datetime,
+            end_datetime=msg.body.end_datetime,
+        )
+        MessageLog.update_message_status(msg.header.message_id, "processed")
+        channel.basic_ack(delivery_tag=delivery_tag)
+    except Exception as e:
+        logger.error("Error handling calendar.invite: %s", e)
+        MessageLog.update_message_status(msg.header.message_id, "failed")
+        channel.basic_nack(delivery_tag=delivery_tag, requeue=False)
 
-    message_id = header.findtext("message_id")
-    source = header.findtext("source")
-    correlation_id = header.findtext("correlation_id")
-    session_id = body.findtext("session_id")
-    title = body.findtext("title")
-    start_datetime = body.findtext("start_datetime")
-    end_datetime = body.findtext("end_datetime")
-    location = body.findtext("location", default="")
 
-    logger.info(
-        "calendar_invite received | correlation_id=%s | message_id=%s | source=%s | session_id=%s | title=%s | %s -> %s | location=%s",
-        correlation_id, message_id, source, session_id, title, start_datetime, end_datetime, location,
-    )
-
-    upsert_session(_body_to_session_payload(body))
-
-
-def handle_session_created(root: etree._Element):
+def handle_session_created(msg: SessionCreatedMessage, channel, delivery_tag: int) -> None:
     """Process a validated session_created message."""
-    header = root.find("header")
-    body = root.find("body")
-    
-    correlation_id = header.findtext("correlation_id")
+    is_new = MessageLog.log_message(msg.header.message_id, "session_created", source=msg.header.source)
+    if not is_new:
+        channel.basic_ack(delivery_tag=delivery_tag)
+        return
+    try:
+        SessionService.create_or_update(
+            session_id=msg.body.session_id,
+            title=msg.body.title,
+            start_datetime=msg.body.start_datetime,
+            end_datetime=msg.body.end_datetime,
+        )
+        SessionEventService.log_event(session_id=msg.body.session_id, event_type="created")
+        MessageLog.update_message_status(msg.header.message_id, "processed")
+        channel.basic_ack(delivery_tag=delivery_tag)
+    except Exception as e:
+        logger.error("Error handling session_created: %s", e)
+        MessageLog.update_message_status(msg.header.message_id, "failed")
+        channel.basic_nack(delivery_tag=delivery_tag, requeue=False)
 
-    logger.info(
-        "session_created received | correlation_id=%s | message_id=%s | source=%s | session_id=%s | title=%s | %s -> %s",
-        correlation_id,
-        header.findtext("message_id"),
-        header.findtext("source"),
-        body.findtext("session_id"),
-        body.findtext("title"),
-        body.findtext("start_datetime"),
-        body.findtext("end_datetime"),
-    )
 
-    upsert_session(_body_to_session_payload(body))
-
-
-def handle_session_updated(root: etree._Element):
+def handle_session_updated(msg, channel, delivery_tag: int) -> None:
     """Process a validated session_updated message."""
-    header = root.find("header")
-    body = root.find("body")
-    
-    correlation_id = header.findtext("correlation_id")
+    is_new = MessageLog.log_message(msg.header.message_id, "session_updated", source=msg.header.source)
+    if not is_new:
+        channel.basic_ack(delivery_tag=delivery_tag)
+        return
+    try:
+        SessionService.create_or_update(
+            session_id=msg.body.session_id,
+            title=msg.body.title,
+            start_datetime=msg.body.start_datetime,
+            end_datetime=msg.body.end_datetime,
+        )
+        SessionEventService.log_event(session_id=msg.body.session_id, event_type="updated")
+        MessageLog.update_message_status(msg.header.message_id, "processed")
+        channel.basic_ack(delivery_tag=delivery_tag)
+    except Exception as e:
+        logger.error("Error handling session_updated: %s", e)
+        MessageLog.update_message_status(msg.header.message_id, "failed")
+        channel.basic_nack(delivery_tag=delivery_tag, requeue=False)
 
-    logger.info(
-        "session_updated received | correlation_id=%s | message_id=%s | source=%s | session_id=%s | title=%s | %s -> %s",
-        correlation_id,
-        header.findtext("message_id"),
-        header.findtext("source"),
-        body.findtext("session_id"),
-        body.findtext("title"),
-        body.findtext("start_datetime"),
-        body.findtext("end_datetime"),
-    )
 
-    upsert_session(_body_to_session_payload(body))
-
-
-def handle_session_deleted(root: etree._Element):
+def handle_session_deleted(msg: SessionDeletedMessage, channel, delivery_tag: int) -> None:
     """Process a validated session_deleted message."""
-    header = root.find("header")
-    body = root.find("body")
-    
-    correlation_id = header.findtext("correlation_id")
-
-    logger.info(
-        "session_deleted received | correlation_id=%s | message_id=%s | source=%s | session_id=%s | reason=%s | deleted_by=%s",
-        correlation_id,
-        header.findtext("message_id"),
-        header.findtext("source"),
-        body.findtext("session_id"),
-        body.findtext("reason", default=""),
-        body.findtext("deleted_by", default=""),
-    )
-
-    delete_session(body.findtext("session_id", default=""))
+    is_new = MessageLog.log_message(msg.header.message_id, "session_deleted", source=msg.header.source)
+    if not is_new:
+        channel.basic_ack(delivery_tag=delivery_tag)
+        return
+    try:
+        delete_session(msg.body.session_id)
+        MessageLog.update_message_status(msg.header.message_id, "processed")
+        channel.basic_ack(delivery_tag=delivery_tag)
+    except Exception as e:
+        logger.error("Error handling session_deleted: %s", e)
+        MessageLog.update_message_status(msg.header.message_id, "failed")
+        channel.basic_nack(delivery_tag=delivery_tag, requeue=False)
 
 
 def handle_session_view_request(root: etree._Element, channel) -> None:
@@ -406,19 +450,37 @@ def handle_cancel_registration(root: etree._Element):
     # Cancellation logic: find registration for identity_uuid/session_id and remove/deactivate
 
 
-def handle_session_create_request(root: etree._Element):
+def handle_session_create_request(msg: SessionCreateRequestMessage, channel, delivery_tag: int) -> None:
     """Process a validated session_create_request message."""
-    header = root.find("header")
-    body = root.find("body")
-    
-    logger.info(
-        "session_create_request received | message_id=%s | title=%s | %s -> %s",
-        header.findtext("message_id"),
-        body.findtext("title"),
-        body.findtext("start_datetime"),
-        body.findtext("end_datetime"),
-    )
-    # Logic to create a session (likely needs manual approval or hits O365/Exchange)
+    is_new = MessageLog.log_message(msg.header.message_id, "session_create_request", source=msg.header.source)
+    if not is_new:
+        channel.basic_ack(delivery_tag=delivery_tag)
+        return
+    try:
+        SessionService.create_or_update(
+            session_id=msg.body.session_id,
+            title=msg.body.title,
+            start_datetime=msg.body.start_datetime,
+            end_datetime=msg.body.end_datetime,
+        )
+        SessionEventService.log_event(session_id=msg.body.session_id, event_type="create_request")
+        producer.publish_session_created(
+            session_id=msg.body.session_id,
+            title=msg.body.title,
+            start_datetime=msg.body.start_datetime,
+            end_datetime=msg.body.end_datetime,
+            location=msg.body.location or "",
+            session_type=msg.body.session_type or "keynote",
+            status=msg.body.status or "published",
+            max_attendees=msg.body.max_attendees or 0,
+            correlation_id=msg.header.correlation_id,
+        )
+        MessageLog.update_message_status(msg.header.message_id, "processed")
+        channel.basic_ack(delivery_tag=delivery_tag)
+    except Exception as e:
+        logger.error("Error handling session_create_request: %s", e)
+        MessageLog.update_message_status(msg.header.message_id, "failed")
+        channel.basic_nack(delivery_tag=delivery_tag, requeue=False)
 
 
 def handle_session_update_request(root: etree._Element):
@@ -449,6 +511,21 @@ def handle_session_delete_request(root: etree._Element):
     # Logic to delete a session
 
 
+def route_message(msg, channel, delivery_tag: int) -> None:
+    """Dispatch a typed message to the appropriate handler."""
+    if isinstance(msg, CalendarInviteMessage):
+        handle_calendar_invite(msg, channel, delivery_tag)
+    elif isinstance(msg, SessionCreateRequestMessage):
+        handle_session_create_request(msg, channel, delivery_tag)
+    elif isinstance(msg, SessionCreatedMessage):
+        handle_session_created(msg, channel, delivery_tag)
+    elif isinstance(msg, SessionDeletedMessage):
+        handle_session_deleted(msg, channel, delivery_tag)
+    else:
+        logger.error("No handler for message type: %s", type(msg).__name__)
+        channel.basic_nack(delivery_tag=delivery_tag, requeue=False)
+
+
 def on_message(channel, method, properties, body: bytes):
     logger.info("Message received on routing key '%s'", method.routing_key)
 
@@ -463,32 +540,50 @@ def on_message(channel, method, properties, body: bytes):
 
     message_type = root.find("header").findtext("type", default="")
 
-    if message_type in ("calendar_invite", "calendar.invite"):
-        handle_calendar_invite(root)
-    elif message_type == "session_created":
-        handle_session_created(root)
-    elif message_type == "session_updated":
-        handle_session_updated(root)
-    elif message_type == "session_deleted":
-        handle_session_deleted(root)
-    elif message_type == "session_registration_confirmed":
-        handle_session_registration_confirmed(root)
-    elif message_type == "cancel_registration":
-        handle_cancel_registration(root)
-    elif message_type == "session_create_request":
-        handle_session_create_request(root)
-    elif message_type == "session_update_request":
-        handle_session_update_request(root)
-    elif message_type == "session_delete_request":
-        handle_session_delete_request(root)
-    elif message_type == "session_view_request":
+    from xml_handlers import (
+        parse_calendar_invite, parse_session_created, parse_session_updated,
+        parse_session_deleted, parse_session_create_request,
+        parse_session_update_request, parse_session_delete_request,
+        parse_session_view_request,
+    )
+
+    _type_parsers = {
+        "calendar_invite": parse_calendar_invite,
+        "calendar.invite": parse_calendar_invite,
+        "session_created": parse_session_created,
+        "session_updated": parse_session_updated,
+        "session_deleted": parse_session_deleted,
+        "session_create_request": parse_session_create_request,
+        "session_update_request": parse_session_update_request,
+        "session_delete_request": parse_session_delete_request,
+        "session_view_request": parse_session_view_request,
+    }
+
+    parser = _type_parsers.get(message_type)
+    if parser is None:
+        if message_type in ("session_registration_confirmed", "cancel_registration"):
+            handle_session_registration_confirmed(root) if message_type == "session_registration_confirmed" else handle_cancel_registration(root)
+            channel.basic_ack(delivery_tag=method.delivery_tag)
+        else:
+            logger.error("Unsupported message type after validation: %s", message_type)
+            channel.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
+        return
+
+    if message_type == "session_view_request":
+        msg = parser(body)
+        if msg is None:
+            channel.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
+            return
         handle_session_view_request(root, channel)
-    else:
-        logger.error("Unsupported message type after validation: %s", message_type)
+        channel.basic_ack(delivery_tag=method.delivery_tag)
+        return
+
+    msg = parser(body)
+    if msg is None:
         channel.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
         return
 
-    channel.basic_ack(delivery_tag=method.delivery_tag)
+    route_message(msg, channel, method.delivery_tag)
 
 
 def start_consumer():
