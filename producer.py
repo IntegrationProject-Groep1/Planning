@@ -41,7 +41,7 @@ def create_session_xml(
     current_attendees: int = 0
 ) -> str:
     """Create a session.created XML message with required header/body fields."""
-    root = etree.Element("message", xmlns=XMLNS)
+    root = etree.Element("message")
 
     header = etree.SubElement(root, "header")
 
@@ -58,7 +58,7 @@ def create_session_xml(
     type_elem.text = "session_created"
 
     version_elem = etree.SubElement(header, "version")
-    version_elem.text = "1.0"
+    version_elem.text = "2.0"
 
     correlation_id_elem = etree.SubElement(header, "correlation_id")
     correlation_id_elem.text = str(uuid.uuid4())
