@@ -30,7 +30,7 @@ ROUTING_KEYS = [
     key.strip()
     for key in os.getenv(
         "ROUTING_KEYS",
-        "calendar.invite,planning.session.created,planning.session.updated,planning.session.deleted,planning.session.view.request",
+        "calendar.invite,planning.session.created,planning.session.updated,planning.session.deleted,planning.session.view.request,crm.to.planning.session_registration_confirmed",
     ).split(",")
     if key.strip()
 ]
@@ -43,6 +43,11 @@ REQUIRED_BODY_FIELDS_BY_TYPE = {
     "session_updated": {"session_id", "title", "start_datetime", "end_datetime"},
     "session_deleted": {"session_id"},
     "session_view_request": set(),
+    "session_registration_confirmed": {"session_id"},
+    "cancel_registration": {"session_id", "identity_uuid"},
+    "session_create_request": {"title", "start_datetime", "end_datetime"},
+    "session_update_request": {"session_id", "title", "start_datetime", "end_datetime"},
+    "session_delete_request": {"session_id"},
 }
 _XSD_BY_TYPE = {
     "calendar.invite": "calendar_invite.xsd",
@@ -50,6 +55,11 @@ _XSD_BY_TYPE = {
     "session_updated": "session_updated.xsd",
     "session_deleted": "session_deleted.xsd",
     "session_view_request": "session_view_request.xsd",
+    "session_registration_confirmed": "session_registration_confirmed.xsd",
+    "cancel_registration": "cancel_registration.xsd",
+    "session_create_request": "session_create_request.xsd",
+    "session_update_request": "session_update_request.xsd",
+    "session_delete_request": "session_delete_request.xsd",
 }
 
 _SESSIONS: dict[str, dict[str, str | int]] = {}
@@ -342,6 +352,83 @@ def handle_session_view_request(root: etree._Element, channel) -> None:
     )
 
 
+def handle_session_registration_confirmed(root: etree._Element):
+    """Process a validated session_registration_confirmed message."""
+    header = root.find("header")
+    body = root.find("body")
+    
+    correlation_id = header.findtext("correlation_id")
+    session_id = body.findtext("session_id")
+
+    logger.info(
+        "session_registration_confirmed received | correlation_id=%s | message_id=%s | session_id=%s",
+        correlation_id,
+        header.findtext("message_id"),
+        session_id,
+    )
+    # Registration confirmed logic would go here (e.g., updating database)
+
+
+def handle_cancel_registration(root: etree._Element):
+    """Process a validated cancel_registration message."""
+    header = root.find("header")
+    body = root.find("body")
+    
+    identity_uuid = body.findtext("identity_uuid")
+    session_id = body.findtext("session_id")
+
+    logger.info(
+        "cancel_registration received | message_id=%s | identity_uuid=%s | session_id=%s",
+        header.findtext("message_id"),
+        identity_uuid,
+        session_id,
+    )
+    # Cancellation logic: find registration for identity_uuid/session_id and remove/deactivate
+
+
+def handle_session_create_request(root: etree._Element):
+    """Process a validated session_create_request message."""
+    header = root.find("header")
+    body = root.find("body")
+    
+    logger.info(
+        "session_create_request received | message_id=%s | title=%s | %s -> %s",
+        header.findtext("message_id"),
+        body.findtext("title"),
+        body.findtext("start_datetime"),
+        body.findtext("end_datetime"),
+    )
+    # Logic to create a session (likely needs manual approval or hits O365/Exchange)
+
+
+def handle_session_update_request(root: etree._Element):
+    """Process a validated session_update_request message."""
+    header = root.find("header")
+    body = root.find("body")
+    
+    logger.info(
+        "session_update_request received | message_id=%s | session_id=%s | title=%s",
+        header.findtext("message_id"),
+        body.findtext("session_id"),
+        body.findtext("title"),
+    )
+    # Logic to update a session
+
+
+def handle_session_delete_request(root: etree._Element):
+    """Process a validated session_delete_request message."""
+    header = root.find("header")
+    body = root.find("body")
+    
+    logger.info(
+        "session_delete_request received | message_id=%s | session_id=%s | reason=%s",
+        header.findtext("message_id"),
+        body.findtext("session_id"),
+        body.findtext("reason", default=""),
+    )
+    # Logic to delete a session
+
+
 def on_message(channel, method, properties, body: bytes):
     logger.info("Message received on routing key '%s'", method.routing_key)
 
@@ -364,6 +451,16 @@ def on_message(channel, method, properties, body: bytes):
         handle_session_updated(root)
     elif message_type == "session_deleted":
         handle_session_deleted(root)
+    elif message_type == "session_registration_confirmed":
+        handle_session_registration_confirmed(root)
+    elif message_type == "cancel_registration":
+        handle_cancel_registration(root)
+    elif message_type == "session_create_request":
+        handle_session_create_request(root)
+    elif message_type == "session_update_request":
+        handle_session_update_request(root)
+    elif message_type == "session_delete_request":
+        handle_session_delete_request(root)
     elif message_type == "session_view_request":
         handle_session_view_request(root, channel)
     else:
