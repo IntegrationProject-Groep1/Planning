@@ -113,12 +113,13 @@ def _require_env(name: str, value: str | None) -> str:
     return value
 
 
-def _build_message_root(message_type: str, correlation_id: str | None = None) -> tuple[etree._Element, etree._Element]:
+def _build_message_root(message_type: str, correlation_id: str | None = None, source: str = "planning") -> tuple[etree._Element, etree._Element]:
     """Create common message/header envelope and return (root, body).
     
     Args:
         message_type: Type van het bericht (e.g., 'session_created')
         correlation_id: Master UUID voor tracering. Indien niet gegeven, wordt er een nieuwe aangemaakt.
+        source: De bron van het bericht (default: 'planning')
     """
     root = etree.Element("message")
 
@@ -131,7 +132,7 @@ def _build_message_root(message_type: str, correlation_id: str | None = None) ->
     timestamp_elem.text = datetime.now(timezone.utc).isoformat()
 
     source_elem = etree.SubElement(header, "source")
-    source_elem.text = "planning"
+    source_elem.text = source
 
     type_elem = etree.SubElement(header, "type")
     type_elem.text = message_type
@@ -203,8 +204,8 @@ def create_session_updated_xml(
     location: str,
     session_type: str = "keynote",
     status: str = "published",
-    max_attendees: int | None = None,
-    current_attendees: int | None = None,
+    max_attendees: int | None = 200,
+    current_attendees: int | None = 0,
 ) -> str:
     """Create a session.updated XML message for integration updates.
     
@@ -226,10 +227,9 @@ def create_session_updated_xml(
     etree.SubElement(body, "session_type").text = session_type
     etree.SubElement(body, "status").text = status
 
-    if max_attendees is not None:
-        etree.SubElement(body, "max_attendees").text = str(max_attendees)
-    if current_attendees is not None:
-        etree.SubElement(body, "current_attendees").text = str(current_attendees)
+    # Contract XSD vereist deze velden als verplicht
+    etree.SubElement(body, "max_attendees").text = str(max_attendees if max_attendees is not None else 120)
+    etree.SubElement(body, "current_attendees").text = str(current_attendees if current_attendees is not None else 0)
 
     return etree.tostring(root, encoding="unicode", pretty_print=True)
 
@@ -262,7 +262,8 @@ def create_session_deleted_xml(
 
 def create_session_view_request_xml(session_id: str | None = None) -> str:
     """Create a session.view.request XML message (single session or all sessions)."""
-    root, body = _build_message_root("session_view_request")
+    # XSD vereist source 'frontend' of 'crm'
+    root, body = _build_message_root("session_view_request", source="frontend")
 
     if session_id:
         etree.SubElement(body, "session_id").text = session_id
