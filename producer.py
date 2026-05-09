@@ -10,6 +10,8 @@ from datetime import datetime, timezone
 from lxml import etree
 from dotenv import load_dotenv
 
+from log_publisher import publish_log, action_for_type
+
 # Load environment variables
 load_dotenv()
 
@@ -356,6 +358,21 @@ def send_message(xml_message: str, routing_key: str = ROUTING_KEY_CREATED):
         )
 
         logger.info("Message sent with routing key '%s'", routing_key)
+
+        # Log B — outbound tracker
+        try:
+            _root = _strip_ns(etree.fromstring(xml_message.encode("utf-8") if isinstance(xml_message, str) else xml_message))
+            msg_type = _root.findtext("header/type") or "unknown"
+            corr_id  = _root.findtext("header/correlation_id") or "unknown"
+        except Exception:
+            msg_type = "unknown"
+            corr_id  = "unknown"
+        channel.queue_declare(queue="logs", durable=True)
+        publish_log(
+            channel, "info", action_for_type(msg_type),
+            f"Published {msg_type} to {routing_key}. CorrelationID: {corr_id}.",
+        )
+
         connection.close()
         return True
 
