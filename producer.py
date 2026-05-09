@@ -85,7 +85,6 @@ ROUTING_KEY_UPDATED = 'planning.session.updated'
 ROUTING_KEY_DELETED = 'planning.session.deleted'
 ROUTING_KEY_VIEW_REQUEST = 'planning.session.view.request'
 ROUTING_KEY_VIEW_RESPONSE = 'planning.session.view.response'
-XMLNS = "urn:integration:planning:v1"
 _XSD_BY_TYPE = {
     "session_created": "session_created.xsd",
     "session_updated": "session_updated.xsd",
@@ -121,7 +120,7 @@ def _build_message_root(message_type: str, correlation_id: str | None = None) ->
         message_type: Type van het bericht (e.g., 'session_created')
         correlation_id: Master UUID voor tracering. Indien niet gegeven, wordt er een nieuwe aangemaakt.
     """
-    root = etree.Element("message", xmlns=XMLNS)
+    root = etree.Element("message")
 
     header = etree.SubElement(root, "header")
 
@@ -459,7 +458,10 @@ def publish_session_created(
     etree.SubElement(body, "max_attendees").text = str(max_attendees)
     etree.SubElement(body, "current_attendees").text = str(current_attendees)
     xml = etree.tostring(root, encoding="unicode", pretty_print=True)
-    return _publish_with_validation_and_retry(xml, ROUTING_KEY_TO_FRONTEND_CREATED, "session_created")
+    ok = _publish_with_validation_and_retry(xml, ROUTING_KEY_TO_FRONTEND_CREATED, "session_created")
+    if ok:
+        _publish_with_validation_and_retry(xml, ROUTING_KEY_CREATED, "session_created")
+    return ok
 
 
 def publish_session_updated(
@@ -488,7 +490,10 @@ def publish_session_updated(
     if current_attendees is not None:
         etree.SubElement(body, "current_attendees").text = str(current_attendees)
     xml = etree.tostring(root, encoding="unicode", pretty_print=True)
-    return _publish_with_validation_and_retry(xml, ROUTING_KEY_TO_FRONTEND_UPDATED, "session_updated")
+    ok = _publish_with_validation_and_retry(xml, ROUTING_KEY_TO_FRONTEND_UPDATED, "session_updated")
+    if ok:
+        _publish_with_validation_and_retry(xml, ROUTING_KEY_UPDATED, "session_updated")
+    return ok
 
 
 def publish_session_deleted(
@@ -505,7 +510,10 @@ def publish_session_deleted(
     if deleted_by:
         etree.SubElement(body, "deleted_by").text = deleted_by
     xml = etree.tostring(root, encoding="unicode", pretty_print=True)
-    return _publish_with_validation_and_retry(xml, ROUTING_KEY_TO_FRONTEND_DELETED, "session_deleted")
+    ok = _publish_with_validation_and_retry(xml, ROUTING_KEY_TO_FRONTEND_DELETED, "session_deleted")
+    if ok:
+        _publish_with_validation_and_retry(xml, ROUTING_KEY_DELETED, "session_deleted")
+    return ok
 
 
 def publish_session_view_response(

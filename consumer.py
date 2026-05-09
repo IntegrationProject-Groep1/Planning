@@ -37,12 +37,12 @@ RABBITMQ_VHOST = os.getenv("RABBITMQ_VHOST", "/")
 # Exchanges published by the sending teams; queues prefixed with our team name.
 CALENDAR_EXCHANGE = os.getenv("CALENDAR_EXCHANGE", "calendar.exchange")
 PLANNING_EXCHANGE = os.getenv("PLANNING_EXCHANGE", "planning.exchange")
-ROUTING_KEY_VIEW_RESPONSE = "planning.session.view.response"
+ROUTING_KEY_VIEW_RESPONSE = "planning.to.frontend.session.view.response"
 CALENDAR_ROUTING_KEYS = [
     key.strip()
     for key in os.getenv(
         "CALENDAR_ROUTING_KEYS",
-        "frontend.to.planning.calendar.invite",
+        "frontend.to.planning.calendar.invite,crm.to.planning.cancel_registration",
     ).split(",")
     if key.strip()
 ]
@@ -55,9 +55,7 @@ SESSION_ROUTING_KEYS = [
             "frontend.to.planning.session.update,"
             "frontend.to.planning.session.delete,"
             "frontend.to.planning.session.view,"
-            "crm.to.planning.session_registration_confirmed,"
-            "crm.to.planning.cancel_registration,"
-            "frontend.to.planning.cancel_registration"
+            "crm.to.planning.session_registration_confirmed"
         ),
     ).split(",")
     if key.strip()
