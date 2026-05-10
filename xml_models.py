@@ -36,7 +36,7 @@ class CalendarInviteBody:
     end_datetime: str
     attendee_email: str = ""
     location: Optional[str] = None
-    user_id: Optional[str] = None
+    master_uuid: Optional[str] = None  # identity_uuid from Identity Service
 
 
 @dataclass

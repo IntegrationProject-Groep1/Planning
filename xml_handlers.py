@@ -95,7 +95,7 @@ def parse_calendar_invite(xml_bytes: bytes) -> Optional[CalendarInviteMessage]:
             correlation_id=_get_text(header_elem, "correlation_id"),
         )
 
-        # Parse body
+        # Parse body — identity_uuid est le master_uuid d'Identity Service
         body = CalendarInviteBody(
             session_id=_get_text(body_elem, "session_id", required=True),
             title=_get_text(body_elem, "title", required=True),
@@ -103,7 +103,7 @@ def parse_calendar_invite(xml_bytes: bytes) -> Optional[CalendarInviteMessage]:
             end_datetime=_get_text(body_elem, "end_datetime", required=True),
             attendee_email=_get_text(body_elem, "attendee_email") or "",
             location=_get_text(body_elem, "location"),
-            user_id=_get_text(body_elem, "user_id"),
+            master_uuid=_get_text(body_elem, "identity_uuid"),
         )
 
         return CalendarInviteMessage(header=header, body=body)
@@ -690,7 +690,7 @@ def build_calendar_invite_xml(
 
     body = etree.SubElement(root, "body")
     if user_id:
-        etree.SubElement(body, "user_id").text = user_id
+        etree.SubElement(body, "identity_uuid").text = user_id
     etree.SubElement(body, "session_id").text = session_id
     etree.SubElement(body, "title").text = title
     etree.SubElement(body, "start_datetime").text = start_datetime

@@ -22,6 +22,7 @@ from xml_models import (
 )
 from graph_service import GraphService
 from log_publisher import publish_log, action_for_type
+from calendar_service import MessageLog, SessionService, SessionRegistrationService, UserService
 
 load_dotenv()
 
@@ -96,36 +97,6 @@ _SESSIONS: dict[str, dict[str, str | int]] = {}
 _SESSIONS_LOCK = threading.Lock()
 
 
-class MessageLog:
-    @staticmethod
-    def log_message(message_id: str, message_type: str, source: str = "", **kwargs) -> bool:
-        logger.debug("MessageLog.log_message: %s %s", message_type, message_id)
-        return True
-
-    @staticmethod
-    def update_message_status(message_id: str, status: str, **kwargs) -> None:
-        logger.debug("MessageLog.update_message_status: %s -> %s", message_id, status)
-
-
-class SessionService:
-    @staticmethod
-    def create_or_update(session_id: str, **kwargs) -> bool:
-        logger.debug("SessionService.create_or_update: %s", session_id)
-        return True
-
-
-class CalendarInviteService:
-    @staticmethod
-    def create(**kwargs) -> bool:
-        logger.debug("CalendarInviteService.create")
-        return True
-
-
-class SessionEventService:
-    @staticmethod
-    def log_event(**kwargs) -> bool:
-        logger.debug("SessionEventService.log_event")
-        return True
 
 
 def _require_env(name: str, value: str | None) -> str:
@@ -298,38 +269,43 @@ def reset_sessions_store() -> None:
 
 def handle_calendar_invite(msg: CalendarInviteMessage, channel, delivery_tag: int) -> None:
     """Process a validated calendar_invite message."""
-    is_new = MessageLog.log_message(msg.header.message_id, "calendar_invite", source=msg.header.source)
+    is_new = MessageLog.log_message(
+        msg.header.message_id, "calendar_invite",
+        source=msg.header.source, timestamp=msg.header.timestamp,
+        correlation_id=msg.header.correlation_id,
+    )
     if not is_new:
         channel.basic_ack(delivery_tag=delivery_tag)
         return
     try:
-        SessionService.create_or_update(
-            session_id=msg.body.session_id,
-            title=msg.body.title,
-            start_datetime=msg.body.start_datetime,
-            end_datetime=msg.body.end_datetime,
-            location=msg.body.location,
-        )
-        CalendarInviteService.create(
-            message_id=msg.header.message_id,
-            session_id=msg.body.session_id,
-            title=msg.body.title,
-            start_datetime=msg.body.start_datetime,
-            end_datetime=msg.body.end_datetime,
-        )
-        GraphService.sync_created(
-            session_id=msg.body.session_id,
-            title=msg.body.title,
-            start_datetime=msg.body.start_datetime,
-            end_datetime=msg.body.end_datetime,
-            location=msg.body.location or "",
-            user_id=msg.body.user_id,
-        )
+        payload = {
+            "session_id": msg.body.session_id,
+            "title": msg.body.title,
+            "start_datetime": msg.body.start_datetime,
+            "end_datetime": msg.body.end_datetime,
+            "location": msg.body.location or "",
+        }
+        SessionService.create_or_update(**payload)
+        upsert_session(payload)
+
+        if msg.body.master_uuid:
+            SessionRegistrationService.register(
+                session_id=msg.body.session_id,
+                master_uuid=msg.body.master_uuid,
+            )
+            GraphService.sync_created(
+                session_id=msg.body.session_id,
+                title=msg.body.title,
+                start_datetime=msg.body.start_datetime,
+                end_datetime=msg.body.end_datetime,
+                location=msg.body.location or "",
+                user_id=msg.body.master_uuid,
+            )
+
         MessageLog.update_message_status(msg.header.message_id, "processed")
         channel.basic_ack(delivery_tag=delivery_tag)
     except Exception as e:
         logger.error("Error handling calendar_invite: %s", e)
-        # Log C — system failure
         publish_log(channel, "error", "system_error",
                     f"Internal Error in handle_calendar_invite: {e}")
         MessageLog.update_message_status(msg.header.message_id, "failed")
@@ -338,23 +314,32 @@ def handle_calendar_invite(msg: CalendarInviteMessage, channel, delivery_tag: in
 
 def handle_session_created(msg: SessionCreatedMessage, channel, delivery_tag: int) -> None:
     """Process a validated session_created message."""
-    is_new = MessageLog.log_message(msg.header.message_id, "session_created", source=msg.header.source)
+    is_new = MessageLog.log_message(
+        msg.header.message_id, "session_created",
+        source=msg.header.source, timestamp=msg.header.timestamp,
+        correlation_id=msg.header.correlation_id,
+    )
     if not is_new:
         channel.basic_ack(delivery_tag=delivery_tag)
         return
     try:
-        SessionService.create_or_update(
-            session_id=msg.body.session_id,
-            title=msg.body.title,
-            start_datetime=msg.body.start_datetime,
-            end_datetime=msg.body.end_datetime,
-        )
-        SessionEventService.log_event(session_id=msg.body.session_id, event_type="created")
+        payload = {
+            "session_id": msg.body.session_id,
+            "title": msg.body.title,
+            "start_datetime": msg.body.start_datetime,
+            "end_datetime": msg.body.end_datetime,
+            "location": msg.body.location or "",
+            "session_type": msg.body.session_type or "keynote",
+            "status": msg.body.status or "published",
+            "max_attendees": msg.body.max_attendees or 0,
+            "current_attendees": msg.body.current_attendees or 0,
+        }
+        SessionService.create_or_update(**payload)
+        upsert_session(payload)
         MessageLog.update_message_status(msg.header.message_id, "processed")
         channel.basic_ack(delivery_tag=delivery_tag)
     except Exception as e:
         logger.error("Error handling session_created: %s", e)
-        # Log C — system failure
         publish_log(channel, "error", "system_error",
                     f"Internal Error in handle_session_created: {e}")
         MessageLog.update_message_status(msg.header.message_id, "failed")
@@ -363,23 +348,39 @@ def handle_session_created(msg: SessionCreatedMessage, channel, delivery_tag: in
 
 def handle_session_updated(msg, channel, delivery_tag: int) -> None:
     """Process a validated session_updated message."""
-    is_new = MessageLog.log_message(msg.header.message_id, "session_updated", source=msg.header.source)
+    is_new = MessageLog.log_message(
+        msg.header.message_id, "session_updated",
+        source=msg.header.source, timestamp=msg.header.timestamp,
+        correlation_id=msg.header.correlation_id,
+    )
     if not is_new:
         channel.basic_ack(delivery_tag=delivery_tag)
         return
     try:
-        SessionService.create_or_update(
+        payload = {
+            "session_id": msg.body.session_id,
+            "title": msg.body.title,
+            "start_datetime": msg.body.start_datetime,
+            "end_datetime": msg.body.end_datetime,
+            "location": msg.body.location or "",
+            "session_type": msg.body.session_type or "keynote",
+            "status": msg.body.status or "published",
+            "max_attendees": msg.body.max_attendees or 0,
+            "current_attendees": msg.body.current_attendees or 0,
+        }
+        SessionService.create_or_update(**payload)
+        upsert_session(payload)
+        GraphService.sync_updated(
             session_id=msg.body.session_id,
             title=msg.body.title,
             start_datetime=msg.body.start_datetime,
             end_datetime=msg.body.end_datetime,
+            location=msg.body.location or "",
         )
-        SessionEventService.log_event(session_id=msg.body.session_id, event_type="updated")
         MessageLog.update_message_status(msg.header.message_id, "processed")
         channel.basic_ack(delivery_tag=delivery_tag)
     except Exception as e:
         logger.error("Error handling session_updated: %s", e)
-        # Log C — system failure
         publish_log(channel, "error", "system_error",
                     f"Internal Error in handle_session_updated: {e}")
         MessageLog.update_message_status(msg.header.message_id, "failed")
@@ -388,17 +389,22 @@ def handle_session_updated(msg, channel, delivery_tag: int) -> None:
 
 def handle_session_deleted(msg: SessionDeletedMessage, channel, delivery_tag: int) -> None:
     """Process a validated session_deleted message."""
-    is_new = MessageLog.log_message(msg.header.message_id, "session_deleted", source=msg.header.source)
+    is_new = MessageLog.log_message(
+        msg.header.message_id, "session_deleted",
+        source=msg.header.source, timestamp=msg.header.timestamp,
+        correlation_id=msg.header.correlation_id,
+    )
     if not is_new:
         channel.basic_ack(delivery_tag=delivery_tag)
         return
     try:
+        GraphService.sync_deleted(session_id=msg.body.session_id, reason=msg.body.reason or "Session cancelled")
+        SessionService.delete(msg.body.session_id)
         delete_session(msg.body.session_id)
         MessageLog.update_message_status(msg.header.message_id, "processed")
         channel.basic_ack(delivery_tag=delivery_tag)
     except Exception as e:
         logger.error("Error handling session_deleted: %s", e)
-        # Log C — system failure
         publish_log(channel, "error", "system_error",
                     f"Internal Error in handle_session_deleted: {e}")
         MessageLog.update_message_status(msg.header.message_id, "failed")
@@ -413,10 +419,10 @@ def handle_session_view_request(root: etree._Element, channel) -> None:
     correlation_id = header.findtext("correlation_id") or header.findtext("message_id") or ""
 
     if requested_session_id:
-        session = get_session(requested_session_id)
+        session = SessionService.get(requested_session_id)
         sessions = [session] if session is not None else []
     else:
-        sessions = list_sessions()
+        sessions = SessionService.list_all(limit=200)
 
     response_xml = _session_view_response_xml(
         request_header=header,
@@ -462,6 +468,33 @@ def handle_session_registration_confirmed(root: etree._Element, channel) -> None
     logger.info("session_registration_confirmed received | session_id=%s", session_id)
 
 
+def handle_user_event(body: bytes, channel) -> None:
+    """Handle UserCreated events from the user.events fanout (Identity Service).
+    Flat XML format without <message><header> — read directly from <user_event>.
+    """
+    try:
+        root = _strip_ns(etree.fromstring(body))
+        event_type = root.findtext("event", default="")
+        if event_type != "UserCreated":
+            logger.info("user_event ignored | type=%s", event_type)
+            return
+
+        master_uuid = root.findtext("master_uuid", default="").strip()
+        email = root.findtext("email", default="").strip()
+
+        if not master_uuid or not email:
+            logger.error("UserCreated event missing master_uuid or email")
+            return
+
+        UserService.save(master_uuid=master_uuid, email=email)
+        logger.info("UserCreated processed | master_uuid=%s | email=%s", master_uuid, email)
+
+    except etree.XMLSyntaxError as e:
+        logger.error("Malformed XML in user_event: %s", e)
+    except Exception as e:
+        logger.error("Error in handle_user_event: %s", e)
+
+
 def handle_cancel_registration(root: etree._Element, channel) -> None:
     """Process a validated cancel_registration message."""
     header = root.find("header")
@@ -470,23 +503,40 @@ def handle_cancel_registration(root: etree._Element, channel) -> None:
     identity_uuid = body.findtext("identity_uuid") or ""
     session_id = body.findtext("session_id") or ""
 
-    logger.info("cancel_registration received | session_id=%s", session_id)
+    if session_id and identity_uuid:
+        SessionRegistrationService.cancel(session_id=session_id, master_uuid=identity_uuid)
+
+    logger.info(
+        "cancel_registration received | message_id=%s | identity_uuid=%s | session_id=%s",
+        header.findtext("message_id"),
+        identity_uuid,
+        session_id,
+    )
 
 
 def handle_session_create_request(msg: SessionCreateRequestMessage, channel, delivery_tag: int) -> None:
     """Process a validated session_create_request message."""
-    is_new = MessageLog.log_message(msg.header.message_id, "session_create_request", source=msg.header.source)
+    is_new = MessageLog.log_message(
+        msg.header.message_id, "session_create_request",
+        source=msg.header.source, timestamp=msg.header.timestamp,
+        correlation_id=msg.header.correlation_id,
+    )
     if not is_new:
         channel.basic_ack(delivery_tag=delivery_tag)
         return
     try:
-        SessionService.create_or_update(
-            session_id=msg.body.session_id,
-            title=msg.body.title,
-            start_datetime=msg.body.start_datetime,
-            end_datetime=msg.body.end_datetime,
-        )
-        SessionEventService.log_event(session_id=msg.body.session_id, event_type="create_request")
+        payload = {
+            "session_id": msg.body.session_id,
+            "title": msg.body.title,
+            "start_datetime": msg.body.start_datetime,
+            "end_datetime": msg.body.end_datetime,
+            "location": msg.body.location or "",
+            "session_type": msg.body.session_type or "keynote",
+            "status": msg.body.status or "published",
+            "max_attendees": msg.body.max_attendees or 0,
+        }
+        SessionService.create_or_update(**payload)
+        upsert_session(payload)
         producer.publish_session_created(
             session_id=msg.body.session_id,
             title=msg.body.title,
@@ -502,7 +552,6 @@ def handle_session_create_request(msg: SessionCreateRequestMessage, channel, del
         channel.basic_ack(delivery_tag=delivery_tag)
     except Exception as e:
         logger.error("Error handling session_create_request: %s", e)
-        # Log C — system failure
         publish_log(channel, "error", "system_error",
                     f"Internal Error in handle_session_create_request: {e}")
         MessageLog.update_message_status(msg.header.message_id, "failed")
@@ -511,18 +560,34 @@ def handle_session_create_request(msg: SessionCreateRequestMessage, channel, del
 
 def handle_session_update_request(msg: SessionUpdateRequestMessage, channel, delivery_tag: int) -> None:
     """Process a validated session_update_request message."""
-    is_new = MessageLog.log_message(msg.header.message_id, "session_update_request", source=msg.header.source)
+    is_new = MessageLog.log_message(
+        msg.header.message_id, "session_update_request",
+        source=msg.header.source, timestamp=msg.header.timestamp,
+        correlation_id=msg.header.correlation_id,
+    )
     if not is_new:
         channel.basic_ack(delivery_tag=delivery_tag)
         return
     try:
-        SessionService.create_or_update(
+        payload = {
+            "session_id": msg.body.session_id,
+            "title": msg.body.title,
+            "start_datetime": msg.body.start_datetime,
+            "end_datetime": msg.body.end_datetime,
+            "location": msg.body.location or "",
+            "session_type": msg.body.session_type or "keynote",
+            "status": msg.body.status or "published",
+            "max_attendees": msg.body.max_attendees or 0,
+        }
+        SessionService.create_or_update(**payload)
+        upsert_session(payload)
+        GraphService.sync_updated(
             session_id=msg.body.session_id,
             title=msg.body.title,
             start_datetime=msg.body.start_datetime,
             end_datetime=msg.body.end_datetime,
+            location=msg.body.location or "",
         )
-        SessionEventService.log_event(session_id=msg.body.session_id, event_type="update_request")
         producer.publish_session_updated(
             session_id=msg.body.session_id,
             title=msg.body.title,
@@ -538,7 +603,6 @@ def handle_session_update_request(msg: SessionUpdateRequestMessage, channel, del
         channel.basic_ack(delivery_tag=delivery_tag)
     except Exception as e:
         logger.error("Error handling session_update_request: %s", e)
-        # Log C — system failure
         publish_log(channel, "error", "system_error",
                     f"Internal Error in handle_session_update_request: {e}")
         MessageLog.update_message_status(msg.header.message_id, "failed")
@@ -547,13 +611,18 @@ def handle_session_update_request(msg: SessionUpdateRequestMessage, channel, del
 
 def handle_session_delete_request(msg: SessionDeleteRequestMessage, channel, delivery_tag: int) -> None:
     """Process a validated session_delete_request message."""
-    is_new = MessageLog.log_message(msg.header.message_id, "session_delete_request", source=msg.header.source)
+    is_new = MessageLog.log_message(
+        msg.header.message_id, "session_delete_request",
+        source=msg.header.source, timestamp=msg.header.timestamp,
+        correlation_id=msg.header.correlation_id,
+    )
     if not is_new:
         channel.basic_ack(delivery_tag=delivery_tag)
         return
     try:
+        GraphService.sync_deleted(session_id=msg.body.session_id, reason=msg.body.reason or "Session deleted")
+        SessionService.delete(msg.body.session_id)
         delete_session(msg.body.session_id)
-        SessionEventService.log_event(session_id=msg.body.session_id, event_type="delete_request")
         producer.publish_session_deleted(
             session_id=msg.body.session_id,
             reason=msg.body.reason,
@@ -563,7 +632,6 @@ def handle_session_delete_request(msg: SessionDeleteRequestMessage, channel, del
         channel.basic_ack(delivery_tag=delivery_tag)
     except Exception as e:
         logger.error("Error handling session_delete_request: %s", e)
-        # Log C — system failure
         publish_log(channel, "error", "system_error",
                     f"Internal Error in handle_session_delete_request: {e}")
         MessageLog.update_message_status(msg.header.message_id, "failed")
@@ -715,6 +783,19 @@ def start_consumer():
             exchange=PLANNING_EXCHANGE,
             routing_key=routing_key,
         )
+
+    # user.events fanout — Identity Service broadcast quand un user est créé
+    USER_EVENTS_EXCHANGE = os.getenv("USER_EVENTS_EXCHANGE", "user.events")
+    USER_EVENTS_QUEUE = os.getenv("USER_EVENTS_QUEUE", "planning.user.events")
+    channel.exchange_declare(exchange=USER_EVENTS_EXCHANGE, exchange_type="fanout", durable=True)
+    channel.queue_declare(queue=USER_EVENTS_QUEUE, durable=True)
+    channel.queue_bind(queue=USER_EVENTS_QUEUE, exchange=USER_EVENTS_EXCHANGE)
+
+    def on_user_event(ch, method, properties, body):
+        handle_user_event(body, ch)
+        ch.basic_ack(delivery_tag=method.delivery_tag)
+
+    channel.basic_consume(queue=USER_EVENTS_QUEUE, on_message_callback=on_user_event)
 
     # Ensure the logs queue exists (durable, default exchange).
     channel.queue_declare(queue="logs", durable=True)

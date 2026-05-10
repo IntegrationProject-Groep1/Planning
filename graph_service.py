@@ -99,21 +99,22 @@ def _mark_sync_deleted(session_id: str, user_id: str) -> None:
 
 def _get_outlook_users_for_session(session_id: str) -> List[str]:
     """
-    Return the user_ids of all users who registered for this session
-    AND have a valid Outlook token stored.
+    Return the master_uuids of all confirmed registrants for this session
+    who have an Outlook token stored in user_tokens.
     """
     with _get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT DISTINCT ci.user_id
-                FROM calendar_invites ci
-                INNER JOIN user_tokens ut ON ut.user_id = ci.user_id
-                WHERE ci.session_id = %s AND ci.user_id IS NOT NULL
+                SELECT DISTINCT u.master_uuid
+                FROM session_registrations sr
+                INNER JOIN users u ON u.user_id = sr.user_id
+                INNER JOIN user_tokens ut ON ut.user_id = u.master_uuid
+                WHERE sr.session_id = %s AND sr.status = 'confirmed'
                 """,
                 (session_id,),
             )
-            return [row["user_id"] for row in cur.fetchall()]
+            return [row["master_uuid"] for row in cur.fetchall()]
 
 
 # ---------------------------------------------------------------------------
