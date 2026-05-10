@@ -453,6 +453,27 @@ class IcsFeedService:
             return None
 
     @staticmethod
+    def get_master_uuid_by_token(feed_token: str) -> Optional[str]:
+        try:
+            conn = _get_connection()
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT u.master_uuid FROM ics_feeds f
+                INNER JOIN users u ON u.user_id = f.user_id
+                WHERE f.feed_token::text = %s
+                """,
+                (feed_token,),
+            )
+            row = cursor.fetchone()
+            cursor.close()
+            conn.close()
+            return row[0] if row else None
+        except psycopg2.Error as e:
+            logger.error("IcsFeedService.get_master_uuid_by_token failed | error=%s", e)
+            return None
+
+    @staticmethod
     def validate_token(master_uuid: str, feed_token: str) -> bool:
         try:
             conn = _get_connection()

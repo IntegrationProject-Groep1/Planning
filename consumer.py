@@ -22,7 +22,7 @@ from xml_models import (
 )
 from graph_service import GraphService
 from log_publisher import publish_log, action_for_type
-from calendar_service import MessageLog, SessionService, SessionRegistrationService, UserService
+from calendar_service import MessageLog, SessionService, SessionRegistrationService, UserService, IcsFeedService
 
 load_dotenv()
 
@@ -289,20 +289,19 @@ def handle_calendar_invite(msg: CalendarInviteMessage, channel, delivery_tag: in
         upsert_session(payload)
 
         if msg.body.master_uuid:
-            user = UserService.get_by_master_uuid(msg.body.master_uuid)
-            if user:
-                SessionRegistrationService.register(
-                    session_id=msg.body.session_id,
-                    master_uuid=msg.body.master_uuid,
-                )
-                GraphService.sync_created(
-                    session_id=msg.body.session_id,
-                    title=msg.body.title,
-                    start_datetime=msg.body.start_datetime,
-                    end_datetime=msg.body.end_datetime,
-                    location=msg.body.location or "",
-                    user_id=user["user_id"],
-                )
+            SessionRegistrationService.register(
+                session_id=msg.body.session_id,
+                master_uuid=msg.body.master_uuid,
+            )
+            IcsFeedService.get_or_create(msg.body.master_uuid)
+            GraphService.sync_created(
+                session_id=msg.body.session_id,
+                title=msg.body.title,
+                start_datetime=msg.body.start_datetime,
+                end_datetime=msg.body.end_datetime,
+                location=msg.body.location or "",
+                user_id=msg.body.master_uuid,
+            )
 
         MessageLog.update_message_status(msg.header.message_id, "processed")
         channel.basic_ack(delivery_tag=delivery_tag)
@@ -850,6 +849,23 @@ def start_health_server(port: int = 30050):
                     self._send_json(404, {"error": "session_not_found", "session_id": session_id})
                     return
                 self._send_json(200, session)
+                return
+
+            if path.startswith("/ics/"):
+                from ics_service import build_ics
+                from calendar_service import IcsFeedService
+                feed_token = path.split("/", 2)[2]
+                master_uuid = IcsFeedService.get_master_uuid_by_token(feed_token)
+                if master_uuid is None:
+                    self._send_json(404, {"error": "invalid_token"})
+                    return
+                sessions = IcsFeedService.get_user_sessions(master_uuid)
+                ics_bytes = build_ics(sessions)
+                self.send_response(200)
+                self.send_header("Content-Type", "text/calendar; charset=utf-8")
+                self.send_header("Content-Disposition", "attachment; filename=planning.ics")
+                self.end_headers()
+                self.wfile.write(ics_bytes)
                 return
 
             self._send_json(404, {"error": "not_found", "path": path})
