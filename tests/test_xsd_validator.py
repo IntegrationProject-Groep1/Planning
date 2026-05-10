@@ -17,8 +17,7 @@ VALID_SESSION_CREATED = b"""<message xmlns="urn:integration:planning:v1">
     <timestamp>2026-05-15T09:00:00Z</timestamp>
     <source>planning</source>
     <type>session_created</type>
-    <version>1.0</version>
-    <correlation_id>corr-001</correlation_id>
+    <version>2.0</version>
   </header>
   <body>
     <session_id>sess-001</session_id>
@@ -39,14 +38,16 @@ VALID_SESSION_UPDATED = b"""<message xmlns="urn:integration:planning:v1">
     <timestamp>2026-05-15T09:30:00Z</timestamp>
     <source>planning</source>
     <type>session_updated</type>
-    <version>1.0</version>
-    <correlation_id>corr-002</correlation_id>
+    <version>2.0</version>
   </header>
   <body>
     <session_id>sess-001</session_id>
     <title>Keynote (Updated)</title>
     <start_datetime>2026-05-15T14:30:00Z</start_datetime>
     <end_datetime>2026-05-15T15:30:00Z</end_datetime>
+    <location>Aula A</location>
+    <session_type>keynote</session_type>
+    <status>published</status>
     <max_attendees>150</max_attendees>
     <current_attendees>25</current_attendees>
   </body>
@@ -58,8 +59,7 @@ VALID_SESSION_DELETED = b"""<message xmlns="urn:integration:planning:v1">
     <timestamp>2026-05-15T10:00:00Z</timestamp>
     <source>planning</source>
     <type>session_deleted</type>
-    <version>1.0</version>
-    <correlation_id>corr-003</correlation_id>
+    <version>2.0</version>
   </header>
   <body>
     <session_id>sess-001</session_id>
@@ -74,8 +74,7 @@ VALID_SESSION_VIEW_RESPONSE = b"""<message xmlns="urn:integration:planning:v1">
     <timestamp>2026-05-15T10:05:01Z</timestamp>
     <source>planning</source>
     <type>session_view_response</type>
-    <version>1.0</version>
-    <correlation_id>corr-004</correlation_id>
+    <version>2.0</version>
   </header>
   <body>
     <request_message_id>req-001</request_message_id>
@@ -98,19 +97,24 @@ VALID_SESSION_VIEW_RESPONSE = b"""<message xmlns="urn:integration:planning:v1">
   </body>
 </message>"""
 
+# calendar_invite.xsd requires: type="calendar_invite", version="2.0",
+# body starts with identity_uuid (UUIDType, required) then session_id … attendee_email (required)
 VALID_CALENDAR_INVITE = b"""<message xmlns="urn:integration:planning:v1">
   <header>
-    <message_id>msg-uuid</message_id>
+    <message_id>msg-calendar-invite-001</message_id>
     <timestamp>2026-05-15T09:00:00Z</timestamp>
     <source>frontend</source>
-    <type>calendar.invite</type>
+    <type>calendar_invite</type>
+    <version>2.0</version>
   </header>
   <body>
+    <identity_uuid>550e8400-e29b-41d4-a716-446655440099</identity_uuid>
     <session_id>sess-001</session_id>
     <title>Keynote: AI in Healthcare</title>
     <start_datetime>2026-05-15T14:00:00Z</start_datetime>
     <end_datetime>2026-05-15T15:00:00Z</end_datetime>
     <location>online</location>
+    <attendee_email>user@example.com</attendee_email>
   </body>
 </message>"""
 
@@ -151,19 +155,25 @@ class TestValidMessages:
         assert valid is True
 
     def test_session_created_optional_fields_absent(self):
-        """session_created is valid without optional fields."""
+        """session_created is valid without the optional speaker element."""
         minimal = b"""<message xmlns="urn:integration:planning:v1">
           <header>
-            <message_id>m1</message_id>
+            <message_id>550e8400-e29b-41d4-a716-446655440010</message_id>
             <timestamp>2026-05-15T09:00:00Z</timestamp>
             <source>planning</source>
             <type>session_created</type>
+            <version>2.0</version>
           </header>
           <body>
             <session_id>sess-001</session_id>
             <title>Test</title>
             <start_datetime>2026-05-15T14:00:00Z</start_datetime>
             <end_datetime>2026-05-15T15:00:00Z</end_datetime>
+            <location>Room A</location>
+            <session_type>keynote</session_type>
+            <status>published</status>
+            <max_attendees>50</max_attendees>
+            <current_attendees>0</current_attendees>
           </body>
         </message>"""
         valid, error = validate_xml(minimal, "session_created")
@@ -173,10 +183,11 @@ class TestValidMessages:
         """session_deleted is valid without reason and deleted_by."""
         minimal = b"""<message xmlns="urn:integration:planning:v1">
           <header>
-            <message_id>m1</message_id>
+            <message_id>550e8400-e29b-41d4-a716-446655440011</message_id>
             <timestamp>2026-05-15T09:00:00Z</timestamp>
             <source>planning</source>
             <type>session_deleted</type>
+            <version>2.0</version>
           </header>
           <body>
             <session_id>sess-001</session_id>
@@ -189,10 +200,11 @@ class TestValidMessages:
         """session_view_response with not_found status and empty sessions is valid."""
         xml = b"""<message xmlns="urn:integration:planning:v1">
           <header>
-            <message_id>m1</message_id>
+            <message_id>550e8400-e29b-41d4-a716-446655440012</message_id>
             <timestamp>2026-05-15T09:00:00Z</timestamp>
             <source>planning</source>
             <type>session_view_response</type>
+            <version>2.0</version>
           </header>
           <body>
             <request_message_id>req-001</request_message_id>

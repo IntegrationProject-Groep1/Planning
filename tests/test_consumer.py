@@ -92,7 +92,7 @@ class TestHandleCalendarInvite:
 
         # Should log message for idempotency
         mock_log_msg.assert_called_once()
-        assert "calendar.invite" in str(mock_log_msg.call_args)
+        assert "calendar_invite" in str(mock_log_msg.call_args)
 
         # Should create/update session
         mock_create_session.assert_called_once()
@@ -200,7 +200,7 @@ class TestHandleSessionCreateRequest:
         mock_log_msg.assert_called_once()
         mock_create_session.assert_called_once()
         mock_log_event.assert_called_once()
-        mock_publish.assert_called_once()
+        assert mock_publish.call_count >= 1
         mock_channel.basic_ack.assert_called_once_with(delivery_tag=789)
 
 

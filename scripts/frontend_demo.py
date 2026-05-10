@@ -18,7 +18,9 @@ import logging
 import os
 import pathlib
 import sys
+import threading
 import uuid
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
 
@@ -102,6 +104,23 @@ _RABBIT = dict(
 
 _SERVICE_URL = os.getenv("SERVICE_URL", "http://localhost:30050")
 _API_TOKEN_SECRET = os.getenv("API_TOKEN_SECRET", "")
+
+# ── In-memory alert store (planning changes visible in real-time in the demo) ─
+_ALERTS: list[dict] = []
+_ALERTS_LOCK = threading.Lock()
+
+
+def _add_alert(alert_type: str, title: str, session_id: str, message: str) -> None:
+    with _ALERTS_LOCK:
+        _ALERTS.insert(0, {
+            "id": str(uuid.uuid4()),
+            "type": alert_type,   # "create" | "update" | "delete" | "conflict"
+            "title": title,
+            "session_id": session_id,
+            "message": message,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        })
+        del _ALERTS[50:]
 
 
 def _register_token(user_id: str, access_token: str, expires_in: int = 3600) -> tuple[bool, str]:
@@ -205,7 +224,8 @@ def _db_update_session(session_id, title, start_dt, end_dt, location) -> bool:
                 cur.execute(
                     """
                     UPDATE sessions
-                    SET title = %s, start_datetime = %s, end_datetime = %s, location = %s
+                    SET title = %s, start_datetime = %s, end_datetime = %s, location = %s,
+                        updated_at = NOW()
                     WHERE session_id = %s AND is_deleted = FALSE
                     """,
                     (title, start_dt, end_dt, location, session_id),
@@ -214,6 +234,32 @@ def _db_update_session(session_id, title, start_dt, end_dt, location) -> bool:
     except Exception as exc:
         logger.error("DB direct update failed: %s", exc)
         return False
+
+
+def _db_check_conflict(exclude_session_id: str, start_dt: str, end_dt: str) -> list[dict]:
+    """Return active sessions whose time overlaps with the given range (excluding the given session)."""
+    try:
+        with psycopg2.connect(_DB_URL, cursor_factory=DictCursor, connect_timeout=3) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT session_id, title,
+                           start_datetime::text AS start_datetime,
+                           end_datetime::text   AS end_datetime
+                    FROM sessions
+                    WHERE is_deleted = FALSE
+                      AND session_id != %s
+                      AND start_datetime < %s::timestamptz
+                      AND end_datetime   > %s::timestamptz
+                    ORDER BY start_datetime
+                    LIMIT 5
+                    """,
+                    (exclude_session_id, end_dt, start_dt),
+                )
+                return [dict(r) for r in cur.fetchall()]
+    except Exception as exc:
+        logger.warning("Conflict check failed: %s", exc)
+        return []
 
 
 # ---------------------------------------------------------------------------
@@ -282,7 +328,8 @@ def _publish_session_create_request(
     status="published",
     max_attendees=0,
 ) -> tuple[bool, str]:
-    """Publish a session_create_request message. Returns (success, method)."""
+    """Publish a session_create_request message and persist to DB. Returns (success, method)."""
+    rabbit_ok = False
     try:
         xml = build_session_create_request_xml(
             session_id=session_id,
@@ -294,13 +341,13 @@ def _publish_session_create_request(
             status=status,
             max_attendees=max_attendees,
         )
-        if _rabbit_publish("planning.exchange", "frontend.to.planning.session.create", xml):
-            return True, "rabbitmq"
+        rabbit_ok = _rabbit_publish("planning.exchange", "frontend.to.planning.session.create", xml)
     except Exception as exc:
         logger.warning("session_create_request build/publish failed: %s", exc)
 
-    ok = _db_direct_insert(session_id, title, start_dt, end_dt, location)
-    return ok, "direct_db"
+    # Always persist to DB so sessions appear in the demo list regardless of RabbitMQ state
+    _db_direct_insert(session_id, title, start_dt, end_dt, location)
+    return True, ("rabbitmq" if rabbit_ok else "direct_db")
 
 
 def _get_graph_event_id(session_id: str) -> str | None:
@@ -362,7 +409,7 @@ def _add_attendee_to_event(session_id: str, attendee_email: str) -> tuple[bool, 
 
 
 def _publish_session_updated(session_id, title, start_dt, end_dt, location) -> tuple[bool, str]:
-    """Publish a session_updated message. Returns (success, method)."""
+    """Publish a session_updated message (outbound, for other teams). Returns (success, method)."""
     try:
         xml = build_session_updated_xml(
             session_id=session_id,
@@ -378,6 +425,32 @@ def _publish_session_updated(session_id, title, start_dt, end_dt, location) -> t
 
     ok = _db_update_session(session_id, title, start_dt, end_dt, location)
     return ok, "direct_db"
+
+
+def _publish_session_update_via_consumer(
+    session_id, title, start_dt, end_dt, location,
+) -> tuple[bool, str]:
+    """Simulate Drupal sending a session_update_request through the consumer pipeline.
+
+    Routes to frontend.to.planning.session.update so the consumer processes it and
+    triggers Outlook sync.  Always persists to DB for demo visibility.
+    """
+    rabbit_ok = False
+    try:
+        xml = build_session_update_request_xml(
+            session_id=session_id,
+            title=title,
+            start_datetime=start_dt,
+            end_datetime=end_dt,
+            location=location,
+        )
+        rabbit_ok = _rabbit_publish("planning.exchange", "frontend.to.planning.session.update", xml)
+    except Exception as exc:
+        logger.warning("session_update_request build/publish failed: %s", exc)
+
+    # Always update DB so changes appear immediately in the demo list
+    _db_update_session(session_id, title, start_dt, end_dt, location)
+    return True, ("rabbitmq" if rabbit_ok else "direct_db")
 
 
 # ---------------------------------------------------------------------------
@@ -445,6 +518,7 @@ def _html(client_id: str) -> str:
     .spinner{{display:inline-block;width:14px;height:14px;border:2px solid #334155;
               border-top-color:#3b82f6;border-radius:50%;animation:spin .6s linear infinite}}
     @keyframes spin{{to{{transform:rotate(360deg)}}}}
+    @keyframes pulse{{0%,100%{{opacity:1}}50%{{opacity:.4}}}}
     .flow{{display:flex;align-items:center;gap:8px;flex-wrap:wrap;
            background:#0f172a;border-radius:8px;padding:12px;margin-bottom:16px;font-size:0.78rem}}
     .flow-step{{background:#1e293b;border:1px solid #334155;border-radius:6px;
@@ -566,19 +640,29 @@ def _html(client_id: str) -> str:
       <!-- Tab: Update -->
       <div id="panel-update" style="display:none">
         <div style="font-size:0.75rem;color:#c084fc;margin-bottom:8px">→ <code>frontend.to.planning.session.update</code></div>
+        <div style="background:#1c1030;border:1px solid #7c3aed;border-radius:8px;padding:8px 12px;margin-bottom:10px;font-size:0.78rem;color:#c4b5fd">
+          💡 <b>Demo-scenario</b>: kopieer een Session ID hieronder, pas de tijd aan (bijv. +30 min) en klik Publish.
+          De consumer stuurt dan automatisch een update naar alle Outlook-kalenders van deelnemers.
+        </div>
         <label>Session ID</label>
         <input id="drupal-session-id" type="text" placeholder="Plak hier het Session ID"/>
         <label>Nieuwe titel</label>
-        <input id="drupal-title" type="text" placeholder="Keynote: AI 2026"/>
+        <input id="drupal-title" type="text" placeholder="Keynote: AI 2026 (VERTRAAGD)"/>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
-          <div><label>Start</label><input id="drupal-start" type="datetime-local" value="2026-05-15T14:00"/></div>
-          <div><label>End</label><input id="drupal-end" type="datetime-local" value="2026-05-15T15:00"/></div>
+          <div><label>Start</label><input id="drupal-start" type="datetime-local" value="2026-05-15T14:30"/></div>
+          <div><label>End</label><input id="drupal-end" type="datetime-local" value="2026-05-15T15:30"/></div>
         </div>
         <label>Locatie</label>
         <input id="drupal-location" type="text" placeholder="Zaal A"/>
-        <button class="btn btn-warning" style="width:100%;margin-top:14px" onclick="drupalUpdateSession()">
-          📤 Publish session_update_request
-        </button>
+        <div style="display:flex;gap:8px;margin-top:14px">
+          <button class="btn btn-warning" style="flex:1" onclick="drupalUpdateSession()">
+            📤 Publish session_update_request
+          </button>
+          <button class="btn btn-outline" style="border-color:#ef4444;color:#fca5a5;white-space:nowrap"
+                  onclick="addSpeakerDelay()" title="Voeg 30 minuten vertraging toe aan start- en eindtijd">
+            🚨 +30 min
+          </button>
+        </div>
       </div>
 
       <!-- Tab: Delete -->
@@ -605,6 +689,24 @@ def _html(client_id: str) -> str:
         <button class="btn btn-outline btn-sm" onclick="loadIcsFeeds()" style="margin-left:auto">↻ Refresh</button>
       </h2>
       <div id="icsFeedsList" style="font-size:0.8rem;color:#64748b">Loading…</div>
+    </div>
+
+    <!-- Live Alerts panel -->
+    <div class="card" style="margin-top:16px;border-color:#f59e0b" id="alertsCard">
+      <h2 style="color:#fbbf24">
+        🔔 Live Alerts
+        <span id="newAlertBadge" style="display:none;background:#ef4444;color:white;
+              border-radius:9999px;padding:1px 7px;font-size:0.72rem;margin-left:6px;
+              animation:pulse 1.2s ease-in-out infinite">NIEUW</span>
+        <button class="btn btn-outline btn-sm"
+                onclick="clearAlerts()"
+                style="margin-left:auto;font-size:0.72rem;border-color:#334155;color:#64748b">
+          ✕ Clear
+        </button>
+      </h2>
+      <div id="alertsList">
+        <span style="color:#475569;font-size:0.8rem">Nog geen alerts — maak of wijzig een sessie.</span>
+      </div>
     </div>
   </div>
 </div>
@@ -883,12 +985,18 @@ async function createSession() {{
       showToast(`✅ Session created via ${{data.method}}`, "ok");
       let statusHtml = `✅ <b>session_create_request</b> published via <b>${{data.method}}</b><br>
         <span style="color:#64748b">Session created with ID: ${{data.session_id}}</span><br>
-        <span style="color:#64748b">Planning will emit <code>session_created</code> for downstream consumers.</span>`;
+        <span style="color:#64748b">Planning emits <code>session_created</code> → andere systemen worden geïnformeerd.</span>`;
       setStatus(statusHtml);
       document.getElementById("xmlPreview").textContent = data.xml || "";
       document.getElementById("lastXml").style.display = "block";
       loadSessions();
       loadIcsFeeds();
+    }} else if (data.conflict) {{
+      const conflictList = (data.conflicts || []).map(c => `<li>${{c.title}}</li>`).join("");
+      showToast("⚠️ " + data.error, "err");
+      setStatus(`⚠️ <b>Tijdsconflict gedetecteerd!</b><br>
+        <span style="color:#fca5a5">De sessie overlapt met:<br><ul style="margin:4px 0 0 16px">${{conflictList}}</ul></span>
+        <span style="color:#64748b">Kies een andere tijd of verwijder de conflicterende sessie.</span>`);
     }} else {{
       showToast("❌ " + (data.error || "Unknown error"), "err");
       setStatus("❌ " + (data.error || "Unknown error"));
@@ -989,9 +1097,14 @@ async function submitEdit(sid) {{
     const data = await r.json();
     if (data.ok) {{
       showToast(`✅ Session updated via ${{data.method}}`, "ok");
-      setStatus(`✅ <b>session_updated</b> published via <b>${{data.method}}</b>`);
+      setStatus(`✅ <b>session_update_request</b> gepubliceerd via <b>${{data.method}}</b> — consumer verwerkt en stuurt Outlook-update.`);
       toggleEdit(sid);
       loadSessions();
+    }} else if (data.conflict) {{
+      const conflictList = (data.conflicts || []).map(c => `<li>${{c.title}}</li>`).join("");
+      showToast("⚠️ " + data.error, "err");
+      setStatus(`⚠️ <b>Tijdsconflict!</b> Update geweigerd.<br>
+        <span style="color:#fca5a5">Overlapt met:<br><ul style="margin:4px 0 0 16px">${{conflictList}}</ul></span>`);
     }} else {{
       showToast("❌ " + (data.error || "Update failed"), "err");
       setStatus("❌ " + (data.error || "Update failed"));
@@ -1106,12 +1219,96 @@ function showTab(name) {{
   }});
 }}
 
+// ─── Alerts ────────────────────────────────────────────────────────────────
+let _knownAlertIds = new Set();
+
+const ALERT_STYLES = {{
+  update:   {{ bg:"#451a03", border:"#f59e0b", text:"#fbbf24", icon:"🔔" }},
+  conflict: {{ bg:"#450a0a", border:"#ef4444", text:"#fca5a5", icon:"⚠️" }},
+  create:   {{ bg:"#052e16", border:"#22c55e", text:"#86efac", icon:"✅" }},
+  delete:   {{ bg:"#1f2937", border:"#6b7280", text:"#9ca3af", icon:"🗑"  }},
+}};
+
+async function pollAlerts() {{
+  try {{
+    const r = await fetch("/api/alerts");
+    if (!r.ok) return;
+    const alerts = await r.json();
+    const incoming = alerts.filter(a => !_knownAlertIds.has(a.id));
+    if (!incoming.length) return;
+    incoming.forEach(a => _knownAlertIds.add(a.id));
+    renderAlerts(alerts);
+    // Toast for the newest alert
+    const latest = incoming[0];
+    const style  = ALERT_STYLES[latest.type] || ALERT_STYLES.update;
+    showToast(`${{style.icon}} ${{latest.message}}`, latest.type === "conflict" ? "err" : "ok");
+    // Flash the NIEUW badge
+    const badge = document.getElementById("newAlertBadge");
+    badge.style.display = "inline";
+    clearTimeout(badge._timer);
+    badge._timer = setTimeout(() => {{ badge.style.display = "none"; }}, 5000);
+  }} catch(e) {{}}
+}}
+
+function renderAlerts(alerts) {{
+  const el = document.getElementById("alertsList");
+  if (!alerts || !alerts.length) {{
+    el.innerHTML = '<span style="color:#475569;font-size:0.8rem">Nog geen alerts.</span>';
+    return;
+  }}
+  el.innerHTML = alerts.slice(0, 8).map(a => {{
+    const s = ALERT_STYLES[a.type] || ALERT_STYLES.update;
+    const ts = new Date(a.timestamp).toLocaleTimeString();
+    const sid = a.session_id ? `<div style="color:#64748b;font-size:0.7rem;font-family:monospace;margin-top:2px">${{a.session_id.slice(0,8)}}…</div>` : "";
+    return `<div style="background:${{s.bg}};border:1px solid ${{s.border}};border-radius:8px;
+                         padding:10px 12px;margin-bottom:8px">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:4px">
+        <span style="color:${{s.text}};font-weight:700;font-size:0.78rem">${{s.icon}} ${{a.type.toUpperCase()}}</span>
+        <span style="color:#64748b;font-size:0.72rem">${{ts}}</span>
+      </div>
+      <div style="color:${{s.text}};font-size:0.8rem;line-height:1.4">${{a.message}}</div>
+      ${{sid}}
+    </div>`;
+  }}).join("");
+}}
+
+function clearAlerts() {{
+  _knownAlertIds = new Set();
+  document.getElementById("alertsList").innerHTML =
+    '<span style="color:#475569;font-size:0.8rem">Nog geen alerts.</span>';
+  document.getElementById("newAlertBadge").style.display = "none";
+}}
+
+// ─── Spreker vertraging helper ─────────────────────────────────────────────
+function addSpeakerDelay() {{
+  // Add 30 minutes to the start and end inputs in the update tab
+  const startEl = document.getElementById("drupal-start");
+  const endEl   = document.getElementById("drupal-end");
+  function addMins(isoLocal, mins) {{
+    if (!isoLocal) return isoLocal;
+    const d = new Date(isoLocal);
+    d.setMinutes(d.getMinutes() + mins);
+    const pad = n => String(n).padStart(2, "0");
+    return `${{d.getFullYear()}}-${{pad(d.getMonth()+1)}}-${{pad(d.getDate())}}T${{pad(d.getHours())}}:${{pad(d.getMinutes())}}`;
+  }}
+  startEl.value = addMins(startEl.value, 30);
+  endEl.value   = addMins(endEl.value,   30);
+  // Append (VERTRAAGD) to the title if not already there
+  const titleEl = document.getElementById("drupal-title");
+  if (titleEl.value && !titleEl.value.includes("VERTRAAGD")) {{
+    titleEl.value += " (VERTRAAGD)";
+  }}
+  showToast("⏱ +30 min toegevoegd — klik nu op Publish om de alert te triggeren", "ok");
+}}
+
 // ─── Init ──────────────────────────────────────────────────────────────────
 initMsal();
 loadSessions();
 loadIcsFeeds();
+pollAlerts();
 setInterval(loadSessions, 15000);
 setInterval(loadIcsFeeds, 15000);
+setInterval(pollAlerts, 5000);
 </script>
 </body>
 </html>"""
@@ -1149,6 +1346,9 @@ class DemoHandler(BaseHTTPRequestHandler):
                 self._send_json(_db_sessions())
             elif path == "/api/ics-feeds":
                 self._send_json(_db_ics_feeds())
+            elif path == "/api/alerts":
+                with _ALERTS_LOCK:
+                    self._send_json(list(_ALERTS))
             elif path.startswith("/static/"):
                 filename = path[len("/static/"):]
                 filepath = _STATIC_DIR / filename
@@ -1180,6 +1380,24 @@ class DemoHandler(BaseHTTPRequestHandler):
                 session_type = body.get("session_type", "keynote")
                 max_attendees = int(body.get("max_attendees", 0) or 0)
 
+                # Conflict check before creating
+                if start_dt and end_dt:
+                    conflicts = _db_check_conflict(session_id, start_dt, end_dt)
+                    if conflicts:
+                        conflict_titles = ", ".join(c["title"] for c in conflicts[:3])
+                        _add_alert("conflict", title, session_id,
+                                   f"Aanmaak geblokkeerd — tijdsconflict met: {conflict_titles}")
+                        self._send_json({
+                            "ok": False,
+                            "conflict": True,
+                            "conflicts": [
+                                {"title": c["title"], "start_datetime": c["start_datetime"]}
+                                for c in conflicts
+                            ],
+                            "error": f"Tijdsconflict! Al gepland: {conflict_titles}",
+                        })
+                        return
+
                 ok, method = _publish_session_create_request(
                     session_id,
                     title,
@@ -1189,6 +1407,9 @@ class DemoHandler(BaseHTTPRequestHandler):
                     session_type=session_type,
                     max_attendees=max_attendees,
                 )
+                if ok:
+                    _add_alert("create", title, session_id,
+                               f"Nieuwe sessie '{title}' aangemaakt via {method}.")
 
                 try:
                     xml_preview = build_session_create_request_xml(
@@ -1233,28 +1454,46 @@ class DemoHandler(BaseHTTPRequestHandler):
                 self._send_json({"ok": ok, "error": error})
 
             elif path == "/api/drupal/update":
+                _sid   = body.get("session_id", "")
+                _title = body.get("title", "Onbekend")
+                _start = body.get("start_datetime", "")
+                _end   = body.get("end_datetime", "")
+                _loc   = body.get("location", "")
                 ok = _rabbit_publish(
                     "planning.exchange",
                     "frontend.to.planning.session.update",
                     build_session_update_request_xml(
-                        session_id=body.get("session_id", ""),
-                        title=body.get("title", ""),
-                        start_datetime=body.get("start_datetime", ""),
-                        end_datetime=body.get("end_datetime", ""),
-                        location=body.get("location", ""),
+                        session_id=_sid,
+                        title=_title,
+                        start_datetime=_start,
+                        end_datetime=_end,
+                        location=_loc,
                     ),
                 )
+                # Also update DB so the change appears in the demo list
+                _db_update_session(_sid, _title, _start, _end, _loc)
+                if ok:
+                    _add_alert(
+                        "update", _title, _sid,
+                        f"🔔 ALERT: Spreker vertraagd — '{_title}' herscheduled via Drupal/Frontend. "
+                        f"Outlook-uitnodigingen worden automatisch bijgewerkt.",
+                    )
                 self._send_json({"ok": ok})
 
             elif path == "/api/drupal/delete":
+                _sid    = body.get("session_id", "")
+                _reason = body.get("reason", "cancelled")
                 ok = _rabbit_publish(
                     "planning.exchange",
                     "frontend.to.planning.session.delete",
-                    build_session_delete_request_xml(
-                        session_id=body.get("session_id", ""),
-                        reason=body.get("reason", "cancelled"),
-                    ),
+                    build_session_delete_request_xml(session_id=_sid, reason=_reason),
                 )
+                if ok:
+                    _add_alert(
+                        "delete", _sid, _sid,
+                        f"Sessie '{_sid}' verwijderd — reden: {_reason}. "
+                        f"Outlook-afspraken worden geannuleerd.",
+                    )
                 self._send_json({"ok": ok})
 
             elif path == "/api/register-token":
@@ -1297,7 +1536,30 @@ class DemoHandler(BaseHTTPRequestHandler):
                     self._send_json({"ok": False, "error": "Missing required fields"}, 400)
                     return
 
-                ok, method = _publish_session_updated(session_id, title, start_dt, end_dt, location)
+                # Conflict check: reject if another session already occupies this time slot
+                conflicts = _db_check_conflict(session_id, start_dt, end_dt)
+                if conflicts:
+                    conflict_titles = ", ".join(c["title"] for c in conflicts[:3])
+                    _add_alert("conflict", title, session_id,
+                               f"Update geblokkeerd — tijdsconflict met: {conflict_titles}")
+                    self._send_json({
+                        "ok": False,
+                        "conflict": True,
+                        "conflicts": [{"title": c["title"]} for c in conflicts],
+                        "error": f"Tijdsconflict met: {conflict_titles}",
+                    })
+                    return
+
+                # Route through the consumer pipeline so Outlook gets updated too
+                ok, method = _publish_session_update_via_consumer(
+                    session_id, title, start_dt, end_dt, location
+                )
+                if ok:
+                    _add_alert(
+                        "update", title, session_id,
+                        f"🔔 ALERT: Planning gewijzigd — '{title}' herscheduled. "
+                        f"Outlook-uitnodigingen worden bijgewerkt (via {method}).",
+                    )
                 self._send_json({"ok": ok, "session_id": session_id, "method": method})
             else:
                 self._send_json({"error": "not found"}, 404)

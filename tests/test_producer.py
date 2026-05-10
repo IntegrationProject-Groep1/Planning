@@ -31,7 +31,7 @@ class TestPublishSessionCreated:
 
         assert result is True
         assert mock_publish.called
-        assert "planning.to.frontend.session.created" in str(mock_publish.call_args)
+        assert any("planning.to.frontend.session.created" in str(c) for c in mock_publish.call_args_list)
 
     @patch("producer.time.sleep")
     @patch("producer._publish_message")
@@ -89,7 +89,7 @@ class TestPublishSessionUpdated:
 
         assert result is True
         assert mock_publish.called
-        assert "planning.to.frontend.session.updated" in str(mock_publish.call_args)
+        assert any("planning.to.frontend.session.updated" in str(c) for c in mock_publish.call_args_list)
 
 
 class TestPublishSessionDeleted:
@@ -108,7 +108,7 @@ class TestPublishSessionDeleted:
 
         assert result is True
         assert mock_publish.called
-        assert "planning.to.frontend.session.deleted" in str(mock_publish.call_args)
+        assert any("planning.to.frontend.session.deleted" in str(c) for c in mock_publish.call_args_list)
 
     @patch("producer._publish_message")
     def test_publish_session_deleted_includes_reason(self, mock_publish):

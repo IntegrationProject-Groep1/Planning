@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(Get-ChildItem c:\\\\Dev\\\\Planning -Exclude .venv,.git)",
+      "Bash(Select-Object Name)",
+      "PowerShell(Get-ChildItem \"c:\\\\Dev\\\\Planning\\\\scripts\" | ForEach-Object { $_.Name })",
+      "PowerShell(Get-ChildItem \"c:\\\\Dev\\\\Planning\\\\migrations\" | ForEach-Object { $_.Name })"
+    ]
+  }
+}
