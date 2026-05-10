@@ -2,7 +2,6 @@ import pika
 import os
 import logging
 import uuid
-import json
 import time
 from functools import lru_cache
 from pathlib import Path
@@ -17,60 +16,30 @@ load_dotenv()
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
+logging.getLogger("pika").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
-# Master UUID Storage (voor correlatie van gerelateerde berichten)
-MASTER_UUID_FILE = Path(os.getenv("MASTER_UUID_FILE", "/tmp/.master_uuids.json"))
+# In-memory correlation ID store (no filesystem dependency)
+_MASTER_UUIDS: dict[str, str] = {}
 
 
 class MasterUUIDManager:
-    """Beheert Master UUIDs (correlation IDs) voor sessies."""
-    
-    @staticmethod
-    def _load_uuids() -> dict:
-        """Laad bestaande Master UUIDs van schijf."""
-        if MASTER_UUID_FILE.exists():
-            try:
-                with open(MASTER_UUID_FILE, "r") as f:
-                    return json.load(f)
-            except (json.JSONDecodeError, IOError):
-                return {}
-        return {}
-    
-    @staticmethod
-    def _save_uuids(uuids: dict) -> None:
-        """Sla Master UUIDs op schijf op."""
-        try:
-            with open(MASTER_UUID_FILE, "w") as f:
-                json.dump(uuids, f, indent=2)
-        except IOError as e:
-            logger.error(f"Fout bij opslaan Master UUIDs: {e}")
-    
+    """Manages Master UUIDs (correlation IDs) for sessions."""
+
     @staticmethod
     def get_or_create(session_id: str) -> str:
-        """
-        Haal bestaande Master UUID op of creëer er een nieuwe.
-        
-        Args:
-            session_id: De unieke identifier van de sessie
-            
-        Returns:
-            De Master UUID (correlation_id) voor deze sessie
-        """
-        uuids = MasterUUIDManager._load_uuids()
-        
-        if session_id not in uuids:
-            uuids[session_id] = str(uuid.uuid4())
-            MasterUUIDManager._save_uuids(uuids)
-            logger.info(f"Nieuwe Master UUID gemaakt voor sessie {session_id}: {uuids[session_id]}")
-        
-        return uuids[session_id]
-    
+        if session_id not in _MASTER_UUIDS:
+            _MASTER_UUIDS[session_id] = str(uuid.uuid4())
+            logger.info(
+                "Master UUID created | session_id=%s | master_uuid=%s",
+                session_id,
+                _MASTER_UUIDS[session_id],
+            )
+        return _MASTER_UUIDS[session_id]
+
     @staticmethod
     def get(session_id: str) -> str | None:
-        """Haal bestaande Master UUID op (geeft None als niet bestaat)."""
-        uuids = MasterUUIDManager._load_uuids()
-        return uuids.get(session_id)
+        return _MASTER_UUIDS.get(session_id)
 
 # RabbitMQ connection settings
 RABBITMQ_HOST = os.getenv("RABBITMQ_HOST", "localhost")
@@ -214,7 +183,6 @@ def create_session_updated_xml(
     # Haal bestaande Master UUID op voor deze sessie
     master_uuid = MasterUUIDManager.get(session_id)
     if not master_uuid:
-        logger.warning(f"Geen Master UUID gevonden voor sessie {session_id}, maak nieuwe aan")
         master_uuid = MasterUUIDManager.get_or_create(session_id)
     
     root, body = _build_message_root("session_updated", correlation_id=master_uuid)
@@ -246,7 +214,6 @@ def create_session_deleted_xml(
     # Haal bestaande Master UUID op voor deze sessie
     master_uuid = MasterUUIDManager.get(session_id)
     if not master_uuid:
-        logger.warning(f"Geen Master UUID gevonden voor sessie {session_id}, maak nieuwe aan")
         master_uuid = MasterUUIDManager.get_or_create(session_id)
     
     root, body = _build_message_root("session_deleted", correlation_id=master_uuid)

@@ -26,6 +26,7 @@ from log_publisher import publish_log, action_for_type
 load_dotenv()
 
 logging.basicConfig(level=logging.INFO)
+logging.getLogger("pika").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 RABBITMQ_HOST = os.getenv("RABBITMQ_HOST", "localhost")
@@ -458,12 +459,7 @@ def handle_session_registration_confirmed(root: etree._Element, channel) -> None
     correlation_id = header.findtext("correlation_id") or ""
     session_id = body.findtext("session_id") or ""
 
-    logger.info(
-        "session_registration_confirmed received | correlation_id=%s | message_id=%s | session_id=%s",
-        correlation_id,
-        header.findtext("message_id"),
-        session_id,
-    )
+    logger.info("session_registration_confirmed received | session_id=%s", session_id)
 
 
 def handle_cancel_registration(root: etree._Element, channel) -> None:
@@ -474,12 +470,7 @@ def handle_cancel_registration(root: etree._Element, channel) -> None:
     identity_uuid = body.findtext("identity_uuid") or ""
     session_id = body.findtext("session_id") or ""
 
-    logger.info(
-        "cancel_registration received | message_id=%s | identity_uuid=%s | session_id=%s",
-        header.findtext("message_id"),
-        identity_uuid,
-        session_id,
-    )
+    logger.info("cancel_registration received | session_id=%s", session_id)
 
 
 def handle_session_create_request(msg: SessionCreateRequestMessage, channel, delivery_tag: int) -> None:
@@ -619,10 +610,7 @@ def on_message(channel, method, properties, body: bytes):
         # Log A — validation failure
         publish_log(channel, "error", "xml_validation",
                     f"Received {msg_type} from {msg_source}. Validation: Failure.")
-        logger.error(
-            "Invalid message - rejected (nack, no requeue)\nPayload:\n%s",
-            body.decode("utf-8", errors="replace"),
-        )
+        logger.error("Invalid message rejected | routing_key=%s", method.routing_key)
         channel.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
         return
 
