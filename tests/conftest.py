@@ -163,18 +163,20 @@ def sample_session_data():
 
 
 @pytest.fixture
-def sample_calendar_invite_data():
-    """Sample calendar invite data for database operations."""
+def sample_registration_data():
+    """Sample registration data for database operations."""
     return {
-        "message_id": "msg-calendar-001",
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "source": "calendar",
-        "type_": "calendar.invite",
         "session_id": "sess-test-001",
-        "title": "Calendar Invite",
-        "start_datetime": "2026-05-15T14:00:00+00:00",
-        "end_datetime": "2026-05-15T15:00:00+00:00",
-        "location": "online",
+        "master_uuid": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+    }
+
+
+@pytest.fixture
+def sample_user_data():
+    """Sample user data for database operations."""
+    return {
+        "master_uuid": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+        "email": "jan.peeters@ehb.be",
     }
 
 
