@@ -289,18 +289,20 @@ def handle_calendar_invite(msg: CalendarInviteMessage, channel, delivery_tag: in
         upsert_session(payload)
 
         if msg.body.master_uuid:
-            SessionRegistrationService.register(
-                session_id=msg.body.session_id,
-                master_uuid=msg.body.master_uuid,
-            )
-            GraphService.sync_created(
-                session_id=msg.body.session_id,
-                title=msg.body.title,
-                start_datetime=msg.body.start_datetime,
-                end_datetime=msg.body.end_datetime,
-                location=msg.body.location or "",
-                user_id=msg.body.master_uuid,
-            )
+            user = UserService.get_by_master_uuid(msg.body.master_uuid)
+            if user:
+                SessionRegistrationService.register(
+                    session_id=msg.body.session_id,
+                    master_uuid=msg.body.master_uuid,
+                )
+                GraphService.sync_created(
+                    session_id=msg.body.session_id,
+                    title=msg.body.title,
+                    start_datetime=msg.body.start_datetime,
+                    end_datetime=msg.body.end_datetime,
+                    location=msg.body.location or "",
+                    user_id=user["user_id"],
+                )
 
         MessageLog.update_message_status(msg.header.message_id, "processed")
         channel.basic_ack(delivery_tag=delivery_tag)
