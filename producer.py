@@ -20,7 +20,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Master UUID Storage (voor correlatie van gerelateerde berichten)
-MASTER_UUID_FILE = Path(__file__).resolve().parent / ".master_uuids.json"
+MASTER_UUID_FILE = Path(os.getenv("MASTER_UUID_FILE", "/tmp/.master_uuids.json"))
 
 
 class MasterUUIDManager:
