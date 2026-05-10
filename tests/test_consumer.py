@@ -77,16 +77,15 @@ class TestHandleCalendarInvite:
 
     @patch("consumer.MessageLog.log_message")
     @patch("consumer.SessionService.create_or_update")
-    @patch("consumer.CalendarInviteService.create")
+    @patch("consumer.upsert_session")
     @patch("consumer.MessageLog.update_message_status")
     def test_handle_calendar_invite_success(
-        self, mock_update_status, mock_create_invite, mock_create_session, mock_log_msg, 
+        self, mock_update_status, mock_upsert, mock_create_session, mock_log_msg,
         sample_calendar_invite_message, mock_channel
     ):
         """Handling valid calendar.invite should succeed."""
         mock_log_msg.return_value = True
         mock_create_session.return_value = True
-        mock_create_invite.return_value = True
 
         handle_calendar_invite(sample_calendar_invite_message, mock_channel, 123)
 
@@ -94,12 +93,10 @@ class TestHandleCalendarInvite:
         mock_log_msg.assert_called_once()
         assert "calendar_invite" in str(mock_log_msg.call_args)
 
-        # Should create/update session
+        # Should create/update session in DB and cache
         mock_create_session.assert_called_once()
         assert "sess-test-001" in str(mock_create_session.call_args)
-
-        # Should create calendar invite record
-        mock_create_invite.assert_called_once()
+        mock_upsert.assert_called_once()
 
         # Should ack the message
         mock_channel.basic_ack.assert_called_once_with(delivery_tag=123)
@@ -121,10 +118,9 @@ class TestHandleCalendarInvite:
 
     @patch("consumer.MessageLog.log_message")
     @patch("consumer.SessionService.create_or_update")
-    @patch("consumer.CalendarInviteService.create")
     @patch("consumer.MessageLog.update_message_status")
     def test_handle_calendar_invite_error_handling(
-        self, mock_update_status, mock_create_invite, mock_create_session, mock_log_msg,
+        self, mock_update_status, mock_create_session, mock_log_msg,
         sample_calendar_invite_message, mock_channel
     ):
         """Handling error should nack and log failure."""
@@ -146,25 +142,24 @@ class TestHandleSessionCreated:
 
     @patch("consumer.MessageLog.log_message")
     @patch("consumer.SessionService.create_or_update")
-    @patch("consumer.SessionEventService.log_event")
+    @patch("consumer.upsert_session")
     @patch("consumer.MessageLog.update_message_status")
     def test_handle_session_created_success(
-        self, mock_update_status, mock_log_event, mock_create_session, mock_log_msg,
+        self, mock_update_status, mock_upsert, mock_create_session, mock_log_msg,
         sample_session_created_xml, mock_channel
     ):
-        """Handling valid session_created should succeed."""
+        """Handling valid session_created should write to DB and update cache."""
         from xml_handlers import parse_session_created
         msg = parse_session_created(sample_session_created_xml)
-        
+
         mock_log_msg.return_value = True
         mock_create_session.return_value = True
-        mock_log_event.return_value = True
 
         handle_session_created(msg, mock_channel, 456)
 
         mock_log_msg.assert_called_once()
         mock_create_session.assert_called_once()
-        mock_log_event.assert_called_once()
+        mock_upsert.assert_called_once()
         mock_channel.basic_ack.assert_called_once_with(delivery_tag=456)
 
 
@@ -173,33 +168,32 @@ class TestHandleSessionCreateRequest:
 
     @patch("consumer.MessageLog.log_message")
     @patch("consumer.SessionService.create_or_update")
-    @patch("consumer.SessionEventService.log_event")
+    @patch("consumer.upsert_session")
     @patch("consumer.MessageLog.update_message_status")
     @patch("producer._publish_with_validation_and_retry")
     def test_handle_session_create_request_success(
         self,
         mock_publish,
         mock_update_status,
-        mock_log_event,
+        mock_upsert,
         mock_create_session,
         mock_log_msg,
         sample_session_create_request_xml,
         mock_channel,
     ):
-        """Handling valid session_create_request should succeed."""
+        """Handling valid session_create_request should write to DB, update cache and publish."""
         from xml_handlers import parse_session_create_request
 
         msg = parse_session_create_request(sample_session_create_request_xml)
         mock_log_msg.return_value = True
         mock_create_session.return_value = True
-        mock_log_event.return_value = True
         mock_publish.return_value = True
 
         handle_session_create_request(msg, mock_channel, 789)
 
         mock_log_msg.assert_called_once()
         mock_create_session.assert_called_once()
-        mock_log_event.assert_called_once()
+        mock_upsert.assert_called_once()
         assert mock_publish.call_count >= 1
         mock_channel.basic_ack.assert_called_once_with(delivery_tag=789)
 

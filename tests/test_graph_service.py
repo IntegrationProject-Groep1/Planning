@@ -318,7 +318,8 @@ class TestConsumerGraphIntegration:
 
         mocker.patch("consumer.MessageLog.log_message", return_value=True)
         mocker.patch("consumer.SessionService.create_or_update")
-        mocker.patch("consumer.CalendarInviteService.create")
+        mocker.patch("consumer.upsert_session")
+        mocker.patch("consumer.SessionRegistrationService.register")
         mocker.patch("consumer.MessageLog.update_message_status")
         mocker.patch("consumer.GraphService.sync_created", return_value=False)
 
