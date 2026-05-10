@@ -10,6 +10,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY consumer.py .
 COPY producer.py .
+COPY log_publisher.py .
 COPY xml_models.py .
 COPY xml_handlers.py .
 COPY calendar_service.py .
