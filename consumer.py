@@ -169,7 +169,7 @@ def validate_xml(body: bytes) -> etree._Element | None:
         logger.error("Could not load/parse XSD schema '%s': %s", schema_filename, e)
         return None
 
-    if not schema.validate(root_with_ns):
+    if not schema.validate(root):
         schema_error = schema.error_log.last_error
         logger.error(
             "XML failed XSD validation for type '%s': %s",

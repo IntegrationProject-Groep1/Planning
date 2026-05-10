@@ -26,8 +26,6 @@ _SCHEMA_MAP: dict[str, str] = {
     "session_view_response": "session_view_response",
 }
 
-_REQUIRED_NS = "urn:integration:planning:v1"
-
 # Cache loaded schemas to avoid re-parsing on every call
 _schema_cache: dict[str, etree.XMLSchema] = {}
 
@@ -66,15 +64,8 @@ def validate_xml(xml_input: "str | bytes", message_type: str) -> tuple[bool, Opt
     try:
         schema = _load_schema(schema_name)
         xml_bytes = xml_input.encode("utf-8") if isinstance(xml_input, str) else xml_input
-        root_with_ns = etree.fromstring(xml_bytes)
 
-        # Require the integration namespace on the root element
-        if root_with_ns.nsmap.get(None) != _REQUIRED_NS:
-            msg = f"Missing or incorrect namespace: expected xmlns='{_REQUIRED_NS}'"
-            logger.warning("XSD validation failed | message_type=%s | errors=%s", message_type, msg)
-            return False, msg
-
-        # Strip namespace so schemas without targetNamespace can validate
+        # Strip namespace before validation — contract forbids xmlns on <message>
         doc = etree.fromstring(xml_bytes)
         for elem in doc.iter():
             elem.tag = etree.QName(elem.tag).localname
