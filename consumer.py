@@ -57,7 +57,9 @@ SESSION_ROUTING_KEYS = [
             "frontend.to.planning.session.update,"
             "frontend.to.planning.session.delete,"
             "frontend.to.planning.session.view,"
-            "crm.to.planning.session_registration_confirmed"
+            "crm.to.planning.session_registration_confirmed,"
+            "kassa.to.planning.user_sessions_request,"
+            "frontend.to.planning.user_sessions_request"
         ),
     ).split(",")
     if key.strip()
@@ -78,6 +80,7 @@ REQUIRED_BODY_FIELDS_BY_TYPE = {
     "session_create_request": {"title", "start_datetime", "end_datetime"},
     "session_update_request": {"session_id", "title", "start_datetime", "end_datetime"},
     "session_delete_request": {"session_id"},
+    "user_sessions_request": {"identity_uuid"},
 }
 _XSD_BY_TYPE = {
     "calendar_invite": "calendar_invite.xsd",
@@ -91,6 +94,7 @@ _XSD_BY_TYPE = {
     "session_create_request": "session_create_request.xsd",
     "session_update_request": "session_update_request.xsd",
     "session_delete_request": "session_delete_request.xsd",
+    "user_sessions_request": "user_sessions_request.xsd",
 }
 
 _SESSIONS: dict[str, dict[str, str | int]] = {}
@@ -194,6 +198,13 @@ def _body_to_session_payload(body: etree._Element) -> dict[str, str | int]:
     if current_attendees and current_attendees.isdigit():
         payload["current_attendees"] = int(current_attendees)
 
+    price_elem = body.find("price")
+    if price_elem is not None and price_elem.text:
+        try:
+            payload["price"] = float(price_elem.text)
+        except ValueError:
+            pass
+
     return payload
 
 
@@ -254,7 +265,13 @@ def _session_view_response_xml(
     for session in sessions:
         session_elem = etree.SubElement(sessions_elem, "session")
         for key, value in session.items():
+            if key == "price":
+                continue
             etree.SubElement(session_elem, key).text = str(value)
+        if session.get("price") is not None:
+            price_elem = etree.SubElement(session_elem, "price")
+            price_elem.set("currency", "eur")
+            price_elem.text = str(session["price"])
 
     return etree.tostring(root, encoding="unicode", pretty_print=True)
 
@@ -579,6 +596,8 @@ def handle_session_update_request(msg: SessionUpdateRequestMessage, channel, del
             "session_type": msg.body.session_type or "keynote",
             "status": msg.body.status or "published",
             "max_attendees": msg.body.max_attendees or 0,
+            "current_attendees": msg.body.current_attendees or 0,
+            "price": msg.body.price,
         }
         SessionService.create_or_update(**payload)
         upsert_session(payload)
@@ -598,6 +617,7 @@ def handle_session_update_request(msg: SessionUpdateRequestMessage, channel, del
             session_type=msg.body.session_type or "keynote",
             status=msg.body.status or "published",
             max_attendees=msg.body.max_attendees,
+            current_attendees=msg.body.current_attendees,
             correlation_id=msg.header.correlation_id,
         )
         MessageLog.update_message_status(msg.header.message_id, "processed")
@@ -637,6 +657,35 @@ def handle_session_delete_request(msg: SessionDeleteRequestMessage, channel, del
                     f"Internal Error in handle_session_delete_request: {e}")
         MessageLog.update_message_status(msg.header.message_id, "failed")
         channel.basic_nack(delivery_tag=delivery_tag, requeue=False)
+
+
+def handle_user_sessions_request(root: etree._Element, channel, properties) -> None:
+    """Process a user_sessions_request (RPC) from Kassa or Frontend."""
+    header = root.find("header")
+    body = root.find("body")
+    identity_uuid = body.findtext("identity_uuid", default="").strip()
+    correlation_id = header.findtext("correlation_id", default="")
+    reply_to = getattr(properties, "reply_to", None)
+
+    sessions = IcsFeedService.get_user_sessions(identity_uuid)
+    status = "ok" if sessions else "not_found"
+
+    try:
+        producer.publish_user_sessions_response(
+            identity_uuid=identity_uuid,
+            sessions=sessions,
+            status=status,
+            correlation_id=correlation_id,
+            reply_to=reply_to,
+        )
+        logger.info(
+            "user_sessions_request processed | identity_uuid=%s | sessions=%d | reply_to=%s",
+            identity_uuid, len(sessions), reply_to,
+        )
+    except Exception as e:
+        logger.error("Error publishing user_sessions_response: %s", e)
+        publish_log(channel, "error", "system_error",
+                    f"Internal Error in handle_user_sessions_request: {e}")
 
 
 # ── Router ────────────────────────────────────────────────────────────────────
@@ -693,7 +742,7 @@ def on_message(channel, method, properties, body: bytes):
         parse_calendar_invite, parse_session_created, parse_session_updated,
         parse_session_deleted, parse_session_create_request,
         parse_session_update_request, parse_session_delete_request,
-        parse_session_view_request,
+        parse_session_view_request, parse_user_sessions_request,
     )
 
     _type_parsers = {
@@ -706,6 +755,7 @@ def on_message(channel, method, properties, body: bytes):
         "session_update_request": parse_session_update_request,
         "session_delete_request": parse_session_delete_request,
         "session_view_request":   parse_session_view_request,
+        "user_sessions_request":  parse_user_sessions_request,
     }
 
     parser = _type_parsers.get(message_type)
@@ -727,6 +777,15 @@ def on_message(channel, method, properties, body: bytes):
             channel.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
             return
         handle_session_view_request(root, channel)
+        channel.basic_ack(delivery_tag=method.delivery_tag)
+        return
+
+    if message_type == "user_sessions_request":
+        msg = parser(body)
+        if msg is None:
+            channel.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
+            return
+        handle_user_sessions_request(root, channel, properties)
         channel.basic_ack(delivery_tag=method.delivery_tag)
         return
 

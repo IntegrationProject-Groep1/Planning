@@ -26,7 +26,17 @@
           <xs:element name="location"       type="xs:string" minOccurs="0"/>
           <xs:element name="session_type"   type="xs:string" minOccurs="0"/>
           <xs:element name="status"         type="xs:string" minOccurs="0"/>
-          <xs:element name="max_attendees"  type="xs:integer" minOccurs="0"/>
+          <xs:element name="max_attendees"      type="xs:integer" minOccurs="0"/>
+          <xs:element name="current_attendees"  type="xs:nonNegativeInteger" minOccurs="0"/>
+          <xs:element name="price" minOccurs="0">
+            <xs:complexType>
+              <xs:simpleContent>
+                <xs:extension base="xs:decimal">
+                  <xs:attribute name="currency" type="xs:string" fixed="eur" use="required"/>
+                </xs:extension>
+              </xs:simpleContent>
+            </xs:complexType>
+          </xs:element>
         </xs:sequence></xs:complexType>
       </xs:element>
     </xs:sequence></xs:complexType>

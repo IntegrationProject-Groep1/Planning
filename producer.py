@@ -60,6 +60,7 @@ _XSD_BY_TYPE = {
     "session_deleted": "session_deleted.xsd",
     "session_view_request": "session_view_request.xsd",
     "session_view_response": "session_view_response.xsd",
+    "user_sessions_response": "user_sessions_response.xsd",
 }
 
 _REQUIRED_BODY_FIELDS: dict[str, set[str]] = {
@@ -68,12 +69,14 @@ _REQUIRED_BODY_FIELDS: dict[str, set[str]] = {
     "session_deleted": {"session_id"},
     "session_view_request": set(),
     "session_view_response": {"request_message_id", "status", "session_count"},
+    "user_sessions_response": {"identity_uuid", "status", "session_count"},
 }
 
 ROUTING_KEY_TO_FRONTEND_CREATED = "planning.to.frontend.session.created"
 ROUTING_KEY_TO_FRONTEND_UPDATED = "planning.to.frontend.session.updated"
 ROUTING_KEY_TO_FRONTEND_DELETED = "planning.to.frontend.session.deleted"
 ROUTING_KEY_TO_FRONTEND_VIEW_RESPONSE = "planning.to.frontend.session.view.response"
+ROUTING_KEY_USER_SESSIONS_RESPONSE = "planning.to.kassa.user_sessions_response"
 
 
 def _require_env(name: str, value: str | None) -> str:
@@ -501,9 +504,48 @@ def publish_session_view_response(
     for session in sessions:
         session_elem = etree.SubElement(sessions_elem, "session")
         for key, value in session.items():
+            if key == "price":
+                continue
             etree.SubElement(session_elem, key).text = str(value)
+        if session.get("price") is not None:
+            price_elem = etree.SubElement(session_elem, "price")
+            price_elem.set("currency", "eur")
+            price_elem.text = str(session["price"])
     xml = etree.tostring(root, encoding="unicode", pretty_print=True)
     return _publish_with_validation_and_retry(xml, ROUTING_KEY_TO_FRONTEND_VIEW_RESPONSE, "session_view_response")
+
+
+def publish_user_sessions_response(
+    identity_uuid: str,
+    sessions: list,
+    status: str = "ok",
+    correlation_id: str | None = None,
+    reply_to: str | None = None,
+) -> bool:
+    """Publish user_sessions_response to Kassa & Frontend (RPC reply)."""
+    root, body = _build_message_root("user_sessions_response", correlation_id=correlation_id)
+    etree.SubElement(body, "identity_uuid").text = identity_uuid
+    etree.SubElement(body, "status").text = status
+    etree.SubElement(body, "session_count").text = str(len(sessions))
+    sessions_elem = etree.SubElement(body, "sessions")
+    for session in sessions:
+        session_elem = etree.SubElement(sessions_elem, "session")
+        etree.SubElement(session_elem, "session_id").text = session.get("session_id", "")
+        etree.SubElement(session_elem, "title").text = session.get("title", "")
+        etree.SubElement(session_elem, "start_datetime").text = str(session.get("start_datetime", ""))
+        etree.SubElement(session_elem, "end_datetime").text = str(session.get("end_datetime", ""))
+        etree.SubElement(session_elem, "location").text = session.get("location") or ""
+        etree.SubElement(session_elem, "session_type").text = session.get("session_type") or "other"
+        etree.SubElement(session_elem, "status").text = session.get("status") or "published"
+        etree.SubElement(session_elem, "max_attendees").text = str(session.get("max_attendees") or 1)
+        etree.SubElement(session_elem, "current_attendees").text = str(session.get("current_attendees", 0))
+        if session.get("price") is not None:
+            price_elem = etree.SubElement(session_elem, "price")
+            price_elem.set("currency", "eur")
+            price_elem.text = str(session["price"])
+    xml = etree.tostring(root, encoding="unicode", pretty_print=True)
+    routing_key = reply_to if reply_to else ROUTING_KEY_USER_SESSIONS_RESPONSE
+    return _publish_with_validation_and_retry(xml, routing_key, "user_sessions_response")
 
 
 def main():

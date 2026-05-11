@@ -212,6 +212,7 @@ class SessionService:
         status: str = "published",
         max_attendees: int = 0,
         current_attendees: int = 0,
+        price: Optional[float] = None,
     ) -> bool:
         try:
             conn = _get_connection()
@@ -220,8 +221,8 @@ class SessionService:
                 """
                 INSERT INTO sessions
                     (session_id, title, start_datetime, end_datetime, location,
-                     session_type, status, max_attendees, current_attendees)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                     session_type, status, max_attendees, current_attendees, price)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (session_id) DO UPDATE SET
                     title              = EXCLUDED.title,
                     start_datetime     = EXCLUDED.start_datetime,
@@ -231,12 +232,13 @@ class SessionService:
                     status             = EXCLUDED.status,
                     max_attendees      = EXCLUDED.max_attendees,
                     current_attendees  = EXCLUDED.current_attendees,
+                    price              = COALESCE(EXCLUDED.price, sessions.price),
                     updated_at         = NOW(),
                     is_deleted         = FALSE,
                     deleted_at         = NULL
                 """,
                 (session_id, title, start_datetime, end_datetime, location,
-                 session_type, status, max_attendees, current_attendees),
+                 session_type, status, max_attendees, current_attendees, price),
             )
             conn.commit()
             cursor.close()
@@ -275,7 +277,7 @@ class SessionService:
             cursor.execute(
                 f"""
                 SELECT session_id, title, start_datetime, end_datetime, location,
-                       session_type, status, max_attendees, current_attendees, created_at, updated_at
+                       session_type, status, max_attendees, current_attendees, price, created_at, updated_at
                 FROM sessions
                 WHERE session_id = %s {where}
                 """,
@@ -298,7 +300,7 @@ class SessionService:
             cursor.execute(
                 f"""
                 SELECT session_id, title, start_datetime, end_datetime, location,
-                       session_type, status, max_attendees, current_attendees, created_at, updated_at
+                       session_type, status, max_attendees, current_attendees, price, created_at, updated_at
                 FROM sessions
                 {where}
                 ORDER BY created_at DESC
@@ -504,7 +506,8 @@ class IcsFeedService:
             cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
             cursor.execute(
                 """
-                SELECT s.session_id, s.title, s.start_datetime, s.end_datetime, s.location
+                SELECT s.session_id, s.title, s.start_datetime, s.end_datetime, s.location,
+                       s.session_type, s.status, s.max_attendees, s.current_attendees, s.price
                 FROM sessions s
                 INNER JOIN session_registrations sr ON sr.session_id = s.session_id
                 INNER JOIN users u ON u.user_id = sr.user_id

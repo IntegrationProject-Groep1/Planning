@@ -179,6 +179,8 @@ class SessionUpdateRequestBody:
     session_type: Optional[str] = None
     status: Optional[str] = None
     max_attendees: Optional[int] = None
+    current_attendees: Optional[int] = None
+    price: Optional[float] = None
 
 
 @dataclass
@@ -248,6 +250,7 @@ class SessionInfo:
     status: Optional[str] = None
     max_attendees: Optional[int] = None
     current_attendees: Optional[int] = None
+    price: Optional[float] = None
 
 
 @dataclass
@@ -277,6 +280,72 @@ class SessionViewResponseMessage:
                 "sessions": [asdict(s) for s in self.body.sessions],
             },
         }
+
+
+# ============================================================================
+# user_sessions_response (OUTGOING — Planning → Kassa & Frontend)
+# ============================================================================
+
+@dataclass
+class UserSessionInfo:
+    """Session details in user_sessions_response."""
+    session_id: str
+    title: str
+    start_datetime: str
+    end_datetime: str
+    location: str
+    session_type: str
+    status: str
+    max_attendees: int
+    current_attendees: int
+    price: Optional[float] = None
+
+
+@dataclass
+class UserSessionsResponseBody:
+    """Body of user_sessions_response message."""
+    identity_uuid: str
+    status: str  # "ok" | "not_found"
+    session_count: int
+    sessions: List[UserSessionInfo]
+
+
+@dataclass
+class UserSessionsResponseMessage:
+    """Complete user_sessions_response message."""
+    header: MessageHeader
+    body: UserSessionsResponseBody
+
+    def to_dict(self) -> dict:
+        return {
+            "header": asdict(self.header),
+            "body": {
+                "identity_uuid": self.body.identity_uuid,
+                "status": self.body.status,
+                "session_count": self.body.session_count,
+                "sessions": [asdict(s) for s in self.body.sessions],
+            },
+        }
+
+
+# ============================================================================
+# user_sessions_request (INCOMING — from Kassa & Frontend)
+# ============================================================================
+
+@dataclass
+class UserSessionsRequestBody:
+    """Body of user_sessions_request message."""
+    identity_uuid: str
+
+
+@dataclass
+class UserSessionsRequestMessage:
+    """Complete user_sessions_request message."""
+    header: MessageHeader
+    body: UserSessionsRequestBody
+
+    def to_dict(self) -> dict:
+        return {"header": asdict(self.header), "body": asdict(self.body)}
 
 
 # ============================================================================
@@ -320,4 +389,6 @@ MESSAGE_TYPES = {
     "session_delete_request": SessionDeleteRequestMessage,
     "session_view_request": SessionViewRequestMessage,
     "session_view_response": SessionViewResponseMessage,
+    "user_sessions_response": UserSessionsResponseMessage,
+    "user_sessions_request": UserSessionsRequestMessage,
 }

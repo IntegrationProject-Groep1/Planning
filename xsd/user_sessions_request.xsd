@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+
+  <xs:simpleType name="UUIDType">
+    <xs:restriction base="xs:string">
+      <xs:pattern value="[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"/>
+    </xs:restriction>
+  </xs:simpleType>
+
+  <!--
+    user_sessions_request — Kassa / Frontend → Planning (RPC request)
+    Sent by Kassa when a visitor's QR code is scanned, or by Frontend to fetch a user's sessions.
+    Planning responds with user_sessions_response on the reply_to queue.
+    Routing key (Kassa):    kassa.to.planning.user_sessions_request
+    Routing key (Frontend): frontend.to.planning.user_sessions_request
+  -->
+  <xs:element name="message">
+    <xs:complexType>
+      <xs:sequence>
+
+        <xs:element name="header">
+          <xs:complexType>
+            <xs:sequence>
+              <xs:element name="message_id"     type="UUIDType"/>
+              <xs:element name="timestamp"      type="xs:dateTime"/>
+              <xs:element name="source">
+                <xs:simpleType>
+                  <xs:restriction base="xs:string">
+                    <xs:enumeration value="kassa"/>
+                    <xs:enumeration value="frontend"/>
+                  </xs:restriction>
+                </xs:simpleType>
+              </xs:element>
+              <xs:element name="type">
+                <xs:simpleType>
+                  <xs:restriction base="xs:string">
+                    <xs:enumeration value="user_sessions_request"/>
+                  </xs:restriction>
+                </xs:simpleType>
+              </xs:element>
+              <xs:element name="version">
+                <xs:simpleType>
+                  <xs:restriction base="xs:string">
+                    <xs:enumeration value="2.0"/>
+                  </xs:restriction>
+                </xs:simpleType>
+              </xs:element>
+              <!-- correlation_id is required for RPC reply matching -->
+              <xs:element name="correlation_id" type="UUIDType"/>
+            </xs:sequence>
+          </xs:complexType>
+        </xs:element>
+
+        <xs:element name="body">
+          <xs:complexType>
+            <xs:sequence>
+              <!-- Master UUID of the visitor whose sessions are requested -->
+              <xs:element name="identity_uuid" type="UUIDType"/>
+            </xs:sequence>
+          </xs:complexType>
+        </xs:element>
+
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+
+</xs:schema>

@@ -30,6 +30,11 @@ from xml_models import (
     SessionViewResponseMessage,
     SessionViewResponseBody,
     SessionInfo,
+    UserSessionInfo,
+    UserSessionsResponseBody,
+    UserSessionsResponseMessage,
+    UserSessionsRequestBody,
+    UserSessionsRequestMessage,
 )
 
 logger = logging.getLogger(__name__)
@@ -290,6 +295,14 @@ def parse_session_update_request(xml_bytes: bytes) -> Optional[SessionUpdateRequ
         )
 
         max_att_str = _get_text(body_elem, "max_attendees")
+        cur_att_str = _get_text(body_elem, "current_attendees")
+        price_elem = body_elem.find("price")
+        price_val: Optional[float] = None
+        if price_elem is not None and price_elem.text:
+            try:
+                price_val = float(price_elem.text)
+            except ValueError:
+                pass
         body = SessionUpdateRequestBody(
             session_id=_get_text(body_elem, "session_id", required=True),
             title=_get_text(body_elem, "title", required=True),
@@ -299,6 +312,8 @@ def parse_session_update_request(xml_bytes: bytes) -> Optional[SessionUpdateRequ
             session_type=_get_text(body_elem, "session_type"),
             status=_get_text(body_elem, "status"),
             max_attendees=int(max_att_str) if max_att_str else None,
+            current_attendees=int(cur_att_str) if cur_att_str else None,
+            price=price_val,
         )
 
         return SessionUpdateRequestMessage(header=header, body=body)
@@ -525,6 +540,8 @@ def build_session_update_request_xml(
     session_type: Optional[str] = None,
     status: Optional[str] = None,
     max_attendees: Optional[int] = None,
+    current_attendees: Optional[int] = None,
+    price: Optional[float] = None,
     correlation_id: Optional[str] = None,
 ) -> str:
     """Build session_update_request XML message (simulates Drupal/frontend)."""
@@ -552,6 +569,12 @@ def build_session_update_request_xml(
         etree.SubElement(body, "status").text = status
     if max_attendees is not None:
         etree.SubElement(body, "max_attendees").text = str(max_attendees)
+    if current_attendees is not None:
+        etree.SubElement(body, "current_attendees").text = str(current_attendees)
+    if price is not None:
+        price_elem = etree.SubElement(body, "price")
+        price_elem.set("currency", "eur")
+        price_elem.text = str(price)
 
     return etree.tostring(root, encoding="unicode", pretty_print=True)
 
@@ -633,8 +656,85 @@ def build_session_view_response_xml(
             etree.SubElement(session_elem, "max_attendees").text = str(session["max_attendees"])
         if session.get("current_attendees") is not None:
             etree.SubElement(session_elem, "current_attendees").text = str(session["current_attendees"])
+        if session.get("price") is not None:
+            price_elem = etree.SubElement(session_elem, "price")
+            price_elem.set("currency", "eur")
+            price_elem.text = str(session["price"])
 
     return etree.tostring(root, encoding="unicode", pretty_print=True)
+
+
+def build_user_sessions_response_xml(
+    identity_uuid: str,
+    sessions: list,
+    status: str = "ok",
+    correlation_id: Optional[str] = None,
+) -> str:
+    """Build user_sessions_response XML message (Planning → Kassa & Frontend)."""
+    root = etree.Element("message")
+
+    header = etree.SubElement(root, "header")
+    etree.SubElement(header, "message_id").text = str(uuid.uuid4())
+    etree.SubElement(header, "timestamp").text = datetime.now(timezone.utc).isoformat()
+    etree.SubElement(header, "source").text = "planning"
+    etree.SubElement(header, "type").text = "user_sessions_response"
+    etree.SubElement(header, "version").text = "2.0"
+    etree.SubElement(header, "correlation_id").text = correlation_id or str(uuid.uuid4())
+
+    body = etree.SubElement(root, "body")
+    etree.SubElement(body, "identity_uuid").text = identity_uuid
+    etree.SubElement(body, "status").text = status
+    etree.SubElement(body, "session_count").text = str(len(sessions))
+
+    sessions_elem = etree.SubElement(body, "sessions")
+    for session in sessions:
+        session_elem = etree.SubElement(sessions_elem, "session")
+        etree.SubElement(session_elem, "session_id").text = session.get("session_id", "")
+        etree.SubElement(session_elem, "title").text = session.get("title", "")
+        etree.SubElement(session_elem, "start_datetime").text = str(session.get("start_datetime", ""))
+        etree.SubElement(session_elem, "end_datetime").text = str(session.get("end_datetime", ""))
+        etree.SubElement(session_elem, "location").text = session.get("location") or ""
+        etree.SubElement(session_elem, "session_type").text = session.get("session_type") or "other"
+        etree.SubElement(session_elem, "status").text = session.get("status") or "published"
+        etree.SubElement(session_elem, "max_attendees").text = str(session.get("max_attendees") or 1)
+        etree.SubElement(session_elem, "current_attendees").text = str(session.get("current_attendees", 0))
+        if session.get("price") is not None:
+            price_elem = etree.SubElement(session_elem, "price")
+            price_elem.set("currency", "eur")
+            price_elem.text = str(session["price"])
+
+    return etree.tostring(root, encoding="unicode", pretty_print=True)
+
+
+def parse_user_sessions_request(xml_bytes: bytes) -> Optional[UserSessionsRequestMessage]:
+    """Parse user_sessions_request message from Kassa or Frontend."""
+    try:
+        root = _strip_ns(etree.fromstring(xml_bytes))
+        header_elem = root.find("header")
+        body_elem = root.find("body")
+
+        if header_elem is None or body_elem is None:
+            logger.error("Missing header or body in user_sessions_request")
+            return None
+
+        header = MessageHeader(
+            message_id=_get_text(header_elem, "message_id", required=True),
+            timestamp=_get_text(header_elem, "timestamp", required=True),
+            source=_get_text(header_elem, "source", required=True),
+            type=_get_text(header_elem, "type", required=True),
+            version=_get_text(header_elem, "version"),
+            correlation_id=_get_text(header_elem, "correlation_id", required=True),
+        )
+
+        body = UserSessionsRequestBody(
+            identity_uuid=_get_text(body_elem, "identity_uuid", required=True),
+        )
+
+        return UserSessionsRequestMessage(header=header, body=body)
+
+    except (etree.XMLSyntaxError, ValueError, Exception) as e:
+        logger.error(f"Error parsing user_sessions_request: {e}")
+        return None
 
 
 def build_calendar_invite_confirmed_xml(
