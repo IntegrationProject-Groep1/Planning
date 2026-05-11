@@ -13,6 +13,7 @@ COPY producer.py .
 COPY xml_models.py .
 COPY xml_handlers.py .
 COPY calendar_service.py .
+COPY seeder.py .
 
 EXPOSE 30050
 

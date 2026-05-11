@@ -155,6 +155,28 @@ Verwachte output in terminal 1:
 INFO:__main__:calendar.invite ontvangen | message_id=... | session_id=sess-test-001 | title=Test sessie | ...
 ```
 
+### Demo-sessies laden (Seeder)
+
+Voor frontend-testing: laad 8 professionele demo-sessies in de database:
+
+**Lokaal:**
+```powershell
+python seeder.py
+```
+
+**In Docker:**
+```powershell
+docker compose exec planning-service python seeder.py
+```
+
+De seeder:
+- ✓ Publiceert 8 professionele sessions via RabbitMQ
+- ✓ De consumer verwerkt ze automatisch en zet ze in de DB
+- ✓ Veilig meerdere keren uit te voeren (idempotent)
+- ✓ Geplande datums liggen in de toekomst (na demo)
+
+**Frontend kan nu alle sessies ophalen via het API!**
+
 ---
 
 ## XML-berichtformaat
