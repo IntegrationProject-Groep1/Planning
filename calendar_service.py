@@ -447,6 +447,8 @@ class IcsFeedService:
             row = cursor.fetchone()
             cursor.close()
             conn.close()
+            if row:
+                logger.info("ICS feed ready | master_uuid=%s | feed_token=%s", master_uuid, row["feed_token"])
             return dict(row) if row else None
         except psycopg2.Error as e:
             logger.error("IcsFeedService.get_or_create failed | master_uuid=%s | error=%s", master_uuid, e)
