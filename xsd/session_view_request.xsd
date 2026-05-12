@@ -23,6 +23,7 @@
               <xs:element name="type">
                 <xs:simpleType><xs:restriction base="xs:string">
                   <xs:enumeration value="session_view_request"/>
+                  <xs:enumeration value="session_view_request_all"/>
                 </xs:restriction></xs:simpleType>
               </xs:element>
               <xs:element name="version">

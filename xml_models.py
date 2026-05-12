@@ -319,5 +319,7 @@ MESSAGE_TYPES = {
     "session_update_request": SessionUpdateRequestMessage,
     "session_delete_request": SessionDeleteRequestMessage,
     "session_view_request": SessionViewRequestMessage,
+    "session_view_request_all": SessionViewRequestMessage,
     "session_view_response": SessionViewResponseMessage,
+    "session_view_response_all": SessionViewResponseMessage,
 }
