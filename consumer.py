@@ -98,6 +98,15 @@ _XSD_BY_TYPE = {
 _SESSIONS: dict[str, dict[str, str | int]] = {}
 _SESSIONS_LOCK = threading.Lock()
 
+# Fields emitted per session in session_view_response XML (XSD allowlist).
+# Order must match xs:sequence in session_view_response.xsd.
+_XSD_SESSION_FIELDS = [
+    "session_id", "title", "start_datetime", "end_datetime",
+    "location", "session_type", "status", "max_attendees", "current_attendees",
+]
+# Fields that are xs:integer / xs:nonNegativeInteger — must not be emitted as "".
+_XSD_INTEGER_FIELDS = {"max_attendees", "current_attendees"}
+
 
 
 
@@ -253,18 +262,13 @@ def _session_view_response_xml(
     etree.SubElement(body, "status").text = status
     etree.SubElement(body, "session_count").text = str(len(sessions))
 
-    _XSD_SESSION_FIELDS = [
-        "session_id", "title", "start_datetime", "end_datetime",
-        "location", "session_type", "status", "max_attendees", "current_attendees",
-    ]
-
     sessions_elem = etree.SubElement(body, "sessions")
     for session in sessions:
         session_elem = etree.SubElement(sessions_elem, "session")
         for key in _XSD_SESSION_FIELDS:
             value = session.get(key)
             if value is None:
-                value = ""
+                value = 0 if key in _XSD_INTEGER_FIELDS else ""
             elif hasattr(value, "strftime"):
                 value = value.strftime("%Y-%m-%dT%H:%M:%SZ")
             etree.SubElement(session_elem, key).text = str(value)
