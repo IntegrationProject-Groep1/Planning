@@ -318,12 +318,16 @@ def handle_calendar_invite(msg: CalendarInviteMessage, channel, delivery_tag: in
         SessionService.create_or_update(**payload)
         upsert_session(payload)
 
+        ics_url = None
         if msg.body.master_uuid:
             SessionRegistrationService.register(
                 session_id=msg.body.session_id,
                 master_uuid=msg.body.master_uuid,
             )
-            IcsFeedService.get_or_create(msg.body.master_uuid)
+            ics_feed = IcsFeedService.get_or_create(msg.body.master_uuid)
+            if ics_feed and ics_feed.get("feed_token"):
+                planning_url = os.getenv("PLANNING_SERVICE_URL", "http://localhost:30050")
+                ics_url = f"{planning_url}/ics/{ics_feed['feed_token']}"
             GraphService.sync_created(
                 session_id=msg.body.session_id,
                 title=msg.body.title,
@@ -333,6 +337,13 @@ def handle_calendar_invite(msg: CalendarInviteMessage, channel, delivery_tag: in
                 user_id=msg.body.master_uuid,
             )
 
+        # §19.3: confirm calendar invite back to Frontend
+        producer.publish_calendar_invite_confirmed(
+            session_id=msg.body.session_id,
+            original_message_id=msg.header.message_id,
+            correlation_id=msg.header.correlation_id,
+            ics_url=ics_url,
+        )
         MessageLog.update_message_status(msg.header.message_id, "processed")
         channel.basic_ack(delivery_tag=delivery_tag)
     except Exception as e:
@@ -493,11 +504,14 @@ def handle_session_view_request(root: etree._Element, channel) -> None:
 
 def handle_session_registration_confirmed(root: etree._Element, channel) -> None:
     """Process a validated session_registration_confirmed message."""
-    header = root.find("header")
     body = root.find("body")
-
-    correlation_id = header.findtext("correlation_id") or ""
     session_id = body.findtext("session_id") or ""
+
+    if session_id:
+        # §21.1: increment current_attendees then broadcast §21.2 occupancy update
+        current, max_att = SessionService.increment_attendees(session_id)
+        if current >= 0:
+            producer.publish_session_occupancy_update(session_id, current, max_att)
 
     logger.info("session_registration_confirmed received | session_id=%s", session_id)
 
@@ -539,6 +553,10 @@ def handle_cancel_registration(root: etree._Element, channel) -> None:
 
     if session_id and identity_uuid:
         SessionRegistrationService.cancel(session_id=session_id, master_uuid=identity_uuid)
+        # §21.2: decrement current_attendees then broadcast occupancy update
+        current, max_att = SessionService.decrement_attendees(session_id)
+        if current >= 0:
+            producer.publish_session_occupancy_update(session_id, current, max_att)
 
     logger.info(
         "cancel_registration received | message_id=%s | identity_uuid=%s | session_id=%s",

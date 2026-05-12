@@ -61,6 +61,7 @@ _XSD_BY_TYPE = {
     "session_view_request": "session_view_request.xsd",
     "session_view_response": "session_view_response.xsd",
     "user_sessions_response": "user_sessions_response.xsd",
+    "session_occupancy_update": "session_occupancy_update.xsd",
 }
 
 _REQUIRED_BODY_FIELDS: dict[str, set[str]] = {
@@ -77,6 +78,9 @@ ROUTING_KEY_TO_FRONTEND_UPDATED = "planning.to.frontend.session.updated"
 ROUTING_KEY_TO_FRONTEND_DELETED = "planning.to.frontend.session.deleted"
 ROUTING_KEY_TO_FRONTEND_VIEW_RESPONSE = "planning.to.frontend.session.view.response"
 ROUTING_KEY_USER_SESSIONS_RESPONSE = "planning.to.kassa.user_sessions_response"
+ROUTING_KEY_CALENDAR_INVITE_CONFIRMED = "planning.to.frontend.calendar.invite.confirmed"
+ROUTING_KEY_SESSION_OCCUPANCY = "planning.session.occupancy"
+CALENDAR_EXCHANGE = "calendar.exchange"
 
 
 def _require_env(name: str, value: str | None) -> str:
@@ -546,6 +550,49 @@ def publish_user_sessions_response(
         # §19.7 RPC reply: publish to default exchange so the message reaches the requester's reply_to queue
         return send_message(xml, routing_key=reply_to, exchange="")
     return _publish_with_validation_and_retry(xml, ROUTING_KEY_USER_SESSIONS_RESPONSE, "user_sessions_response")
+
+
+def publish_calendar_invite_confirmed(
+    session_id: str,
+    original_message_id: str,
+    correlation_id: str | None = None,
+    ics_url: str | None = None,
+) -> bool:
+    """§19.3 — Publish calendar_invite_confirmed to Frontend via calendar.exchange."""
+    root, body = _build_message_root("calendar_invite_confirmed", correlation_id=correlation_id)
+    etree.SubElement(body, "session_id").text = session_id
+    etree.SubElement(body, "original_message_id").text = original_message_id
+    etree.SubElement(body, "status").text = "confirmed"
+    if ics_url:
+        etree.SubElement(body, "ics_url").text = ics_url
+    xml = etree.tostring(root, encoding="unicode", pretty_print=True)
+    return send_message(xml, routing_key=ROUTING_KEY_CALENDAR_INVITE_CONFIRMED, exchange=CALENDAR_EXCHANGE)
+
+
+def publish_session_occupancy_update(
+    session_id: str,
+    current_attendees: int,
+    max_attendees: int,
+) -> bool:
+    """§21.2 — Broadcast session_occupancy_update to all teams via planning.exchange."""
+    if max_attendees <= 0:
+        logger.warning("Skipping occupancy update — max_attendees=%d for session_id=%s", max_attendees, session_id)
+        return True
+    status = "full" if current_attendees >= max_attendees else "available"
+    root = etree.Element("message")
+    header = etree.SubElement(root, "header")
+    etree.SubElement(header, "message_id").text = str(uuid.uuid4())
+    etree.SubElement(header, "timestamp").text = datetime.now(timezone.utc).isoformat()
+    etree.SubElement(header, "source").text = "planning"
+    etree.SubElement(header, "type").text = "session_occupancy_update"
+    etree.SubElement(header, "version").text = "2.0"
+    body = etree.SubElement(root, "body")
+    etree.SubElement(body, "session_id").text = session_id
+    etree.SubElement(body, "current_attendees").text = str(current_attendees)
+    etree.SubElement(body, "max_attendees").text = str(max_attendees)
+    etree.SubElement(body, "status").text = status
+    xml = etree.tostring(root, encoding="unicode", pretty_print=True)
+    return _publish_with_validation_and_retry(xml, ROUTING_KEY_SESSION_OCCUPANCY, "session_occupancy_update")
 
 
 def main():

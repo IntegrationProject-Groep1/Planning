@@ -316,6 +316,54 @@ class SessionService:
             logger.error("SessionService.list_all failed: %s", e)
             return []
 
+    @staticmethod
+    def increment_attendees(session_id: str) -> tuple[int, int]:
+        """Increment current_attendees by 1. Returns (current, max) or (-1, 0) on error/not found."""
+        try:
+            conn = _get_connection()
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE sessions SET current_attendees = current_attendees + 1 "
+                "WHERE session_id = %s AND is_deleted = FALSE "
+                "RETURNING current_attendees, max_attendees",
+                (session_id,),
+            )
+            row = cursor.fetchone()
+            conn.commit()
+            cursor.close()
+            conn.close()
+            if row:
+                logger.info("Attendees incremented | session_id=%s | count=%d", session_id, row[0])
+                return int(row[0]), int(row[1])
+            return -1, 0
+        except psycopg2.Error as e:
+            logger.error("SessionService.increment_attendees failed: %s", e)
+            return -1, 0
+
+    @staticmethod
+    def decrement_attendees(session_id: str) -> tuple[int, int]:
+        """Decrement current_attendees by 1 (floor 0). Returns (current, max) or (-1, 0) on error/not found."""
+        try:
+            conn = _get_connection()
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE sessions SET current_attendees = GREATEST(current_attendees - 1, 0) "
+                "WHERE session_id = %s AND is_deleted = FALSE "
+                "RETURNING current_attendees, max_attendees",
+                (session_id,),
+            )
+            row = cursor.fetchone()
+            conn.commit()
+            cursor.close()
+            conn.close()
+            if row:
+                logger.info("Attendees decremented | session_id=%s | count=%d", session_id, row[0])
+                return int(row[0]), int(row[1])
+            return -1, 0
+        except psycopg2.Error as e:
+            logger.error("SessionService.decrement_attendees failed: %s", e)
+            return -1, 0
+
 
 # ============================================================================
 # SESSION REGISTRATIONS
