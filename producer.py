@@ -456,10 +456,8 @@ def publish_session_updated(
     etree.SubElement(body, "location").text = location
     etree.SubElement(body, "session_type").text = session_type
     etree.SubElement(body, "status").text = status
-    if max_attendees is not None:
-        etree.SubElement(body, "max_attendees").text = str(max_attendees)
-    if current_attendees is not None:
-        etree.SubElement(body, "current_attendees").text = str(current_attendees)
+    etree.SubElement(body, "max_attendees").text = str(max_attendees if max_attendees is not None else 0)
+    etree.SubElement(body, "current_attendees").text = str(current_attendees if current_attendees is not None else 0)
     xml = etree.tostring(root, encoding="unicode", pretty_print=True)
     ok = _publish_with_validation_and_retry(xml, ROUTING_KEY_TO_FRONTEND_UPDATED, "session_updated")
     if ok:

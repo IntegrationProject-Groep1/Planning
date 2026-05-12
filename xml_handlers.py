@@ -609,8 +609,9 @@ def build_session_view_response_xml(
     status: str,
     sessions: list,
     correlation_id: Optional[str] = None,
+    message_type: str = "session_view_response",
 ) -> str:
-    """Build session_view_response XML message.
+    """Build session_view_response or session_view_response_all XML message.
 
     Args:
         request_message_id: Message ID of the incoming request
@@ -618,6 +619,7 @@ def build_session_view_response_xml(
         status: "ok" or "not_found"
         sessions: List of dicts with session details
         correlation_id: Correlation ID from request
+        message_type: Type of the response message
     """
     root = etree.Element("message")
 
@@ -625,7 +627,7 @@ def build_session_view_response_xml(
     etree.SubElement(header, "message_id").text = str(uuid.uuid4())
     etree.SubElement(header, "timestamp").text = datetime.now(timezone.utc).isoformat()
     etree.SubElement(header, "source").text = "planning"
-    etree.SubElement(header, "type").text = "session_view_response"
+    etree.SubElement(header, "type").text = message_type
     etree.SubElement(header, "version").text = "2.0"
     etree.SubElement(header, "correlation_id").text = correlation_id or str(uuid.uuid4())
 
@@ -842,7 +844,7 @@ def parse_message(xml_bytes: bytes) -> Optional[Union[
             return parse_session_update_request(xml_bytes)
         elif msg_type == "session_delete_request":
             return parse_session_delete_request(xml_bytes)
-        elif msg_type == "session_view_request":
+        elif msg_type in ["session_view_request", "session_view_request_all"]:
             return parse_session_view_request(xml_bytes)
         else:
             logger.warning(f"Unknown message type: {msg_type}")

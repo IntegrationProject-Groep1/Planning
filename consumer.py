@@ -75,6 +75,7 @@ REQUIRED_BODY_FIELDS_BY_TYPE = {
     "session_updated": {"session_id", "title", "start_datetime", "end_datetime"},
     "session_deleted": {"session_id"},
     "session_view_request": set(),
+    "session_view_request_all": set(),
     "session_registration_confirmed": {"session_id"},
     "cancel_registration": {"session_id", "identity_uuid"},
     "session_create_request": {"title", "start_datetime", "end_datetime"},
@@ -89,6 +90,7 @@ _XSD_BY_TYPE = {
     "session_updated": "session_updated.xsd",
     "session_deleted": "session_deleted.xsd",
     "session_view_request": "session_view_request.xsd",
+    "session_view_request_all": "session_view_request.xsd",
     "session_registration_confirmed": "session_registration_confirmed.xsd",
     "cancel_registration": "cancel_registration.xsd",
     "session_create_request": "session_create_request.xsd",
@@ -99,6 +101,15 @@ _XSD_BY_TYPE = {
 
 _SESSIONS: dict[str, dict[str, str | int]] = {}
 _SESSIONS_LOCK = threading.Lock()
+
+# Fields emitted per session in session_view_response XML (XSD allowlist).
+# Order must match xs:sequence in session_view_response.xsd.
+_XSD_SESSION_FIELDS = [
+    "session_id", "title", "start_datetime", "end_datetime",
+    "location", "session_type", "status", "max_attendees", "current_attendees",
+]
+# Fields that are xs:integer / xs:nonNegativeInteger — must not be emitted as "".
+_XSD_INTEGER_FIELDS = {"max_attendees", "current_attendees"}
 
 
 
@@ -236,15 +247,16 @@ def _session_view_response_xml(
     request_header: etree._Element,
     requested_session_id: str | None,
     sessions: list[dict[str, str | int]],
+    response_type: str = "session_view_response",
 ) -> str:
-    """Build a session_view_response XML message."""
+    """Build a session_view_response or session_view_response_all XML message."""
     root = etree.Element("message")
 
     header = etree.SubElement(root, "header")
     etree.SubElement(header, "message_id").text = str(uuid.uuid4())
     etree.SubElement(header, "timestamp").text = datetime.now(timezone.utc).isoformat()
     etree.SubElement(header, "source").text = "planning"
-    etree.SubElement(header, "type").text = "session_view_response"
+    etree.SubElement(header, "type").text = response_type
     etree.SubElement(header, "version").text = "2.0"
     etree.SubElement(header, "correlation_id").text = (
         request_header.findtext("correlation_id")
@@ -264,9 +276,12 @@ def _session_view_response_xml(
     sessions_elem = etree.SubElement(body, "sessions")
     for session in sessions:
         session_elem = etree.SubElement(sessions_elem, "session")
-        for key, value in session.items():
-            if key == "price":
-                continue
+        for key in _XSD_SESSION_FIELDS:
+            value = session.get(key)
+            if value is None:
+                value = 0 if key in _XSD_INTEGER_FIELDS else ""
+            elif hasattr(value, "strftime"):
+                value = value.strftime("%Y-%m-%dT%H:%M:%SZ")
             etree.SubElement(session_elem, key).text = str(value)
         if session.get("price") is not None:
             price_elem = etree.SubElement(session_elem, "price")
@@ -433,8 +448,11 @@ def handle_session_view_request(root: etree._Element, channel) -> None:
     """Process a view request and publish view response to RabbitMQ."""
     header = root.find("header")
     body = root.find("body")
+    msg_type = header.findtext("type", default="session_view_request")
     requested_session_id = body.findtext("session_id", default="").strip()
     correlation_id = header.findtext("correlation_id") or header.findtext("message_id") or ""
+
+    response_type = "session_view_response_all" if msg_type == "session_view_request_all" else "session_view_response"
 
     if requested_session_id:
         session = SessionService.get(requested_session_id)
@@ -446,6 +464,7 @@ def handle_session_view_request(root: etree._Element, channel) -> None:
         request_header=header,
         requested_session_id=requested_session_id or None,
         sessions=sessions,
+        response_type=response_type
     )
 
     try:
@@ -754,8 +773,9 @@ def on_message(channel, method, properties, body: bytes):
         "session_create_request": parse_session_create_request,
         "session_update_request": parse_session_update_request,
         "session_delete_request": parse_session_delete_request,
-        "session_view_request":   parse_session_view_request,
-        "user_sessions_request":  parse_user_sessions_request,
+        "session_view_request":     parse_session_view_request,
+        "session_view_request_all": parse_session_view_request,
+        "user_sessions_request":    parse_user_sessions_request,
     }
 
     parser = _type_parsers.get(message_type)
@@ -771,7 +791,7 @@ def on_message(channel, method, properties, body: bytes):
             channel.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
         return
 
-    if message_type == "session_view_request":
+    if message_type in ["session_view_request", "session_view_request_all"]:
         msg = parser(body)
         if msg is None:
             channel.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
