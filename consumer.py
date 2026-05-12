@@ -21,7 +21,7 @@ from xml_models import (
     SessionDeleteRequestMessage,
 )
 from graph_service import GraphService
-from log_publisher import publish_log, action_for_type
+from log_publisher import publish_log, publish_system_error, action_for_type
 from calendar_service import MessageLog, SessionService, SessionRegistrationService, UserService, IcsFeedService
 
 load_dotenv()
@@ -730,22 +730,31 @@ def route_message(msg, channel, delivery_tag: int) -> None:
 def on_message(channel, method, properties, body: bytes):
     logger.info("Message received on routing key '%s'", method.routing_key)
 
-    # Extract type/source before full validation so we can log meaningful errors.
+    # Extract type/source/message_id before full validation so we can log meaningful errors.
     try:
         _raw = _strip_ns(etree.fromstring(body))
         msg_type = _raw.findtext("header/type", default="unknown")
         msg_source = _raw.findtext("header/source", default="unknown")
+        _related_message_id = _raw.findtext("header/message_id")
     except Exception:
         msg_type = "unknown"
         msg_source = "unknown"
+        _related_message_id = None
 
     root = validate_xml(body)
     if root is None:
         # Log A — validation failure
         publish_log(channel, "error", "xml_validation",
                     f"Received {msg_type} from {msg_source}. Validation: Failure.")
+        # §2.5.1: ACK (not NACK) to avoid queue blocking + system_error with invalid_xml_format
+        publish_system_error(
+            channel,
+            error_code="invalid_xml_format",
+            description=f"Incoming {msg_type} from {msg_source} failed XSD validation.",
+            related_message_id=_related_message_id,
+        )
         logger.error("Invalid message rejected | routing_key=%s", method.routing_key)
-        channel.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
+        channel.basic_ack(delivery_tag=method.delivery_tag)
         return
 
     # Log A — validation success
@@ -873,8 +882,9 @@ def start_consumer():
 
     channel.basic_consume(queue=USER_EVENTS_QUEUE, on_message_callback=on_user_event)
 
-    # Ensure the logs queue exists (durable, default exchange).
+    # Ensure infrastructure queues exist (durable, default exchange).
     channel.queue_declare(queue="logs", durable=True)
+    channel.queue_declare(queue="planning.errors", durable=True)
 
     channel.basic_qos(prefetch_count=1)
     channel.basic_consume(queue=CALENDAR_QUEUE_NAME, on_message_callback=on_message)
@@ -941,6 +951,48 @@ def start_health_server(port: int = 30050):
                 self.send_header("Content-Disposition", "attachment; filename=planning.ics")
                 self.end_headers()
                 self.wfile.write(ics_bytes)
+                return
+
+            self._send_json(404, {"error": "not_found", "path": path})
+
+        def do_POST(self):
+            parsed = urlparse(self.path)
+            path = parsed.path.rstrip("/") or "/"
+
+            if path == "/api/tokens":
+                # §19.0 — OAuth token registration (Frontend → Planning)
+                auth = self.headers.get("Authorization", "")
+                expected_token = os.getenv("API_TOKEN_SECRET", "")
+                if not expected_token or auth != f"Bearer {expected_token}":
+                    self._send_json(401, {"error": "unauthorized"})
+                    return
+
+                content_length = int(self.headers.get("Content-Length", 0))
+                raw_body = self.rfile.read(content_length)
+                try:
+                    data = json.loads(raw_body)
+                except (json.JSONDecodeError, ValueError):
+                    self._send_json(400, {"error": "invalid_json"})
+                    return
+
+                identity_uuid = (data.get("identity_uuid") or "").strip()
+                access_token = (data.get("access_token") or "").strip()
+                refresh_token = (data.get("refresh_token") or "").strip()
+                expires_in = int(data.get("expires_in") or 3600)
+
+                if not identity_uuid or not access_token or not refresh_token:
+                    self._send_json(400, {"error": "missing_required_fields"})
+                    return
+
+                try:
+                    from token_service import TokenService
+                    from datetime import timedelta
+                    expires_at = datetime.now(timezone.utc) + timedelta(seconds=expires_in)
+                    TokenService.store(identity_uuid, access_token, refresh_token, expires_at)
+                    self._send_json(200, {"status": "ok", "identity_uuid": identity_uuid})
+                except Exception as exc:
+                    logger.error("POST /api/tokens failed: %s", exc)
+                    self._send_json(500, {"error": "internal_server_error"})
                 return
 
             self._send_json(404, {"error": "not_found", "path": path})

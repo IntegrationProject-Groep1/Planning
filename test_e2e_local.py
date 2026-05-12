@@ -102,14 +102,14 @@ def test_message_send_receive():
         # Publish message
         print("\n📤 Publishing message...")
         test_message = """<?xml version="1.0" encoding="UTF-8"?>
-<message xmlns="urn:integration:planning:v1">
+<message>
     <header>
-        <message_id>msg-12345</message_id>
+        <message_id>a1b2c3d4-e5f6-7890-abcd-ef1234567890</message_id>
         <timestamp>2026-04-29T13:00:00Z</timestamp>
         <source>planning</source>
         <type>session_created</type>
-        <version>1.0</version>
-        <correlation_id>test-correlation-uuid-12345</correlation_id>
+        <version>2.0</version>
+        <correlation_id>c1d2e3f4-a5b6-7890-cdef-012345678901</correlation_id>
     </header>
     <body>
         <session_id>test-session</session_id>

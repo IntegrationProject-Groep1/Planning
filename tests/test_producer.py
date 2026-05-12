@@ -205,7 +205,7 @@ class TestPublishSessionViewResponse:
 # Tests for XSD validation gate in _publish_with_validation_and_retry
 # ============================================================================
 
-VALID_SESSION_CREATED_XML = b"""<message xmlns="urn:integration:planning:v1">
+VALID_SESSION_CREATED_XML = b"""<message>
   <header>
     <message_id>m1</message_id>
     <timestamp>2026-05-15T09:00:00Z</timestamp>
@@ -220,7 +220,7 @@ VALID_SESSION_CREATED_XML = b"""<message xmlns="urn:integration:planning:v1">
   </body>
 </message>"""
 
-INVALID_SESSION_CREATED_XML = b"""<message xmlns="urn:integration:planning:v1">
+INVALID_SESSION_CREATED_XML = b"""<message>
   <header>
     <message_id>m1</message_id>
     <timestamp>2026-05-15T09:00:00Z</timestamp>

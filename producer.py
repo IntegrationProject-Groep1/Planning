@@ -288,7 +288,7 @@ def validate_xml(xml_string: str) -> bool:
         return False
 
 
-def send_message(xml_message: str, routing_key: str = ROUTING_KEY_CREATED):
+def send_message(xml_message: str, routing_key: str = ROUTING_KEY_CREATED, exchange: str | None = None):
     try:
         user = _require_env("RABBITMQ_USER", RABBITMQ_USER)
         password = _require_env("RABBITMQ_PASS", RABBITMQ_PASS)
@@ -318,7 +318,7 @@ def send_message(xml_message: str, routing_key: str = ROUTING_KEY_CREATED):
             return False
 
         channel.basic_publish(
-            exchange=EXCHANGE_NAME,
+            exchange=exchange if exchange is not None else EXCHANGE_NAME,
             routing_key=routing_key,
             body=xml_message,
             properties=pika.BasicProperties(
@@ -542,8 +542,10 @@ def publish_user_sessions_response(
             price_elem.set("currency", "eur")
             price_elem.text = str(session["price"])
     xml = etree.tostring(root, encoding="unicode", pretty_print=True)
-    routing_key = reply_to if reply_to else ROUTING_KEY_USER_SESSIONS_RESPONSE
-    return _publish_with_validation_and_retry(xml, routing_key, "user_sessions_response")
+    if reply_to:
+        # §19.7 RPC reply: publish to default exchange so the message reaches the requester's reply_to queue
+        return send_message(xml, routing_key=reply_to, exchange="")
+    return _publish_with_validation_and_retry(xml, ROUTING_KEY_USER_SESSIONS_RESPONSE, "user_sessions_response")
 
 
 def main():

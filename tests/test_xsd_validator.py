@@ -11,7 +11,7 @@ from xsd_validator import validate_xml, validate_or_raise
 # Fixtures – valid XML for each outgoing message type
 # ---------------------------------------------------------------------------
 
-VALID_SESSION_CREATED = b"""<message xmlns="urn:integration:planning:v1">
+VALID_SESSION_CREATED = b"""<message>
   <header>
     <message_id>550e8400-e29b-41d4-a716-446655440000</message_id>
     <timestamp>2026-05-15T09:00:00Z</timestamp>
@@ -32,7 +32,7 @@ VALID_SESSION_CREATED = b"""<message xmlns="urn:integration:planning:v1">
   </body>
 </message>"""
 
-VALID_SESSION_UPDATED = b"""<message xmlns="urn:integration:planning:v1">
+VALID_SESSION_UPDATED = b"""<message>
   <header>
     <message_id>550e8400-e29b-41d4-a716-446655440001</message_id>
     <timestamp>2026-05-15T09:30:00Z</timestamp>
@@ -53,7 +53,7 @@ VALID_SESSION_UPDATED = b"""<message xmlns="urn:integration:planning:v1">
   </body>
 </message>"""
 
-VALID_SESSION_DELETED = b"""<message xmlns="urn:integration:planning:v1">
+VALID_SESSION_DELETED = b"""<message>
   <header>
     <message_id>550e8400-e29b-41d4-a716-446655440002</message_id>
     <timestamp>2026-05-15T10:00:00Z</timestamp>
@@ -68,7 +68,7 @@ VALID_SESSION_DELETED = b"""<message xmlns="urn:integration:planning:v1">
   </body>
 </message>"""
 
-VALID_SESSION_VIEW_RESPONSE = b"""<message xmlns="urn:integration:planning:v1">
+VALID_SESSION_VIEW_RESPONSE = b"""<message>
   <header>
     <message_id>550e8400-e29b-41d4-a716-446655440003</message_id>
     <timestamp>2026-05-15T10:05:01Z</timestamp>
@@ -99,7 +99,7 @@ VALID_SESSION_VIEW_RESPONSE = b"""<message xmlns="urn:integration:planning:v1">
 
 # calendar_invite.xsd requires: type="calendar_invite", version="2.0",
 # body starts with identity_uuid (UUIDType, required) then session_id … attendee_email (required)
-VALID_CALENDAR_INVITE = b"""<message xmlns="urn:integration:planning:v1">
+VALID_CALENDAR_INVITE = b"""<message>
   <header>
     <message_id>msg-calendar-invite-001</message_id>
     <timestamp>2026-05-15T09:00:00Z</timestamp>
@@ -156,7 +156,7 @@ class TestValidMessages:
 
     def test_session_created_optional_fields_absent(self):
         """session_created is valid without the optional speaker element."""
-        minimal = b"""<message xmlns="urn:integration:planning:v1">
+        minimal = b"""<message>
           <header>
             <message_id>550e8400-e29b-41d4-a716-446655440010</message_id>
             <timestamp>2026-05-15T09:00:00Z</timestamp>
@@ -181,7 +181,7 @@ class TestValidMessages:
 
     def test_session_deleted_optional_fields_absent(self):
         """session_deleted is valid without reason and deleted_by."""
-        minimal = b"""<message xmlns="urn:integration:planning:v1">
+        minimal = b"""<message>
           <header>
             <message_id>550e8400-e29b-41d4-a716-446655440011</message_id>
             <timestamp>2026-05-15T09:00:00Z</timestamp>
@@ -198,7 +198,7 @@ class TestValidMessages:
 
     def test_view_response_not_found_empty_sessions(self):
         """session_view_response with not_found status and empty sessions is valid."""
-        xml = b"""<message xmlns="urn:integration:planning:v1">
+        xml = b"""<message>
           <header>
             <message_id>550e8400-e29b-41d4-a716-446655440012</message_id>
             <timestamp>2026-05-15T09:00:00Z</timestamp>
@@ -224,7 +224,7 @@ class TestValidMessages:
 class TestInvalidMessages:
     def test_session_created_missing_session_id(self):
         """Missing required session_id in body must fail."""
-        xml = b"""<message xmlns="urn:integration:planning:v1">
+        xml = b"""<message>
           <header>
             <message_id>m1</message_id>
             <timestamp>2026-05-15T09:00:00Z</timestamp>
@@ -243,7 +243,7 @@ class TestInvalidMessages:
 
     def test_wrong_type_enum_value(self):
         """type field with an unrecognised value must fail."""
-        xml = b"""<message xmlns="urn:integration:planning:v1">
+        xml = b"""<message>
           <header>
             <message_id>m1</message_id>
             <timestamp>2026-05-15T09:00:00Z</timestamp>
@@ -262,7 +262,7 @@ class TestInvalidMessages:
 
     def test_view_response_invalid_status_enum(self):
         """status value not in {ok, not_found} must fail."""
-        xml = b"""<message xmlns="urn:integration:planning:v1">
+        xml = b"""<message>
           <header>
             <message_id>m1</message_id>
             <timestamp>2026-05-15T09:00:00Z</timestamp>
@@ -310,7 +310,7 @@ class TestInvalidMessages:
 
     def test_calendar_invite_invalid_datetime_format(self):
         """calendar.invite uses xs:dateTime — a plain date string must fail."""
-        xml = b"""<message xmlns="urn:integration:planning:v1">
+        xml = b"""<message>
           <header>
             <message_id>m1</message_id>
             <timestamp>2026-05-15T09:00:00Z</timestamp>
@@ -337,7 +337,7 @@ class TestValidateOrRaise:
         validate_or_raise(VALID_SESSION_CREATED, "session_created")
 
     def test_invalid_raises_value_error(self):
-        xml = b"""<message xmlns="urn:integration:planning:v1">
+        xml = b"""<message>
           <header>
             <message_id>m1</message_id>
             <timestamp>2026-05-15T09:00:00Z</timestamp>

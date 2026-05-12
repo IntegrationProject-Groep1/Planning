@@ -14,11 +14,11 @@ import json
 @pytest.fixture
 def sample_calendar_invite_xml():
     """Sample calendar.invite XML message."""
-    return b"""<message xmlns="urn:integration:planning:v1">
+    return b"""<message>
         <header>
             <message_id>msg-001</message_id>
             <timestamp>2026-05-15T09:00:00Z</timestamp>
-            <source>calendar</source>
+            <source>frontend</source>
             <type>calendar.invite</type>
         </header>
         <body>
@@ -34,13 +34,13 @@ def sample_calendar_invite_xml():
 @pytest.fixture
 def sample_session_create_request_xml():
     """Sample session_create_request XML message."""
-    return b"""<message xmlns="urn:integration:planning:v1">
+    return b"""<message>
         <header>
             <message_id>msg-005</message_id>
             <timestamp>2026-05-15T08:30:00Z</timestamp>
             <source>frontend</source>
             <type>session_create_request</type>
-            <version>1.0</version>
+            <version>2.0</version>
             <correlation_id>corr-000</correlation_id>
         </header>
         <body>
@@ -59,13 +59,13 @@ def sample_session_create_request_xml():
 @pytest.fixture
 def sample_session_created_xml():
     """Sample session_created XML message."""
-    return b"""<message xmlns="urn:integration:planning:v1">
+    return b"""<message>
         <header>
             <message_id>msg-002</message_id>
             <timestamp>2026-05-15T09:00:00Z</timestamp>
             <source>planning</source>
             <type>session_created</type>
-            <version>1.0</version>
+            <version>2.0</version>
             <correlation_id>corr-001</correlation_id>
         </header>
         <body>
@@ -85,13 +85,13 @@ def sample_session_created_xml():
 @pytest.fixture
 def sample_session_updated_xml():
     """Sample session_updated XML message."""
-    return b"""<message xmlns="urn:integration:planning:v1">
+    return b"""<message>
         <header>
             <message_id>msg-003</message_id>
             <timestamp>2026-05-15T09:30:00Z</timestamp>
             <source>planning</source>
             <type>session_updated</type>
-            <version>1.0</version>
+            <version>2.0</version>
             <correlation_id>corr-001</correlation_id>
         </header>
         <body>
@@ -111,13 +111,13 @@ def sample_session_updated_xml():
 @pytest.fixture
 def sample_session_deleted_xml():
     """Sample session_deleted XML message."""
-    return b"""<message xmlns="urn:integration:planning:v1">
+    return b"""<message>
         <header>
             <message_id>msg-004</message_id>
             <timestamp>2026-05-15T10:00:00Z</timestamp>
             <source>planning</source>
             <type>session_deleted</type>
-            <version>1.0</version>
+            <version>2.0</version>
             <correlation_id>corr-001</correlation_id>
         </header>
         <body>
@@ -131,13 +131,13 @@ def sample_session_deleted_xml():
 @pytest.fixture
 def sample_session_view_request_xml():
     """Sample session_view_request XML message."""
-    return b"""<message xmlns="urn:integration:planning:v1">
+    return b"""<message>
         <header>
             <message_id>req-001</message_id>
             <timestamp>2026-05-15T10:05:00Z</timestamp>
-            <source>calendar</source>
+            <source>frontend</source>
             <type>session_view_request</type>
-            <version>1.0</version>
+            <version>2.0</version>
             <correlation_id>corr-002</correlation_id>
         </header>
         <body>
@@ -206,7 +206,7 @@ def malformed_xml():
 @pytest.fixture
 def xml_missing_header():
     """XML without header element."""
-    return b"""<message xmlns="urn:integration:planning:v1">
+    return b"""<message>
         <body>
             <session_id>sess-001</session_id>
             <title>Test</title>
@@ -219,11 +219,11 @@ def xml_missing_header():
 @pytest.fixture
 def xml_missing_body():
     """XML without body element."""
-    return b"""<message xmlns="urn:integration:planning:v1">
+    return b"""<message>
         <header>
             <message_id>msg-001</message_id>
             <timestamp>2026-05-15T09:00:00Z</timestamp>
-            <source>calendar</source>
+            <source>frontend</source>
             <type>calendar.invite</type>
         </header>
     </message>"""
@@ -232,7 +232,7 @@ def xml_missing_body():
 @pytest.fixture
 def xml_missing_required_fields():
     """XML missing required fields."""
-    return b"""<message xmlns="urn:integration:planning:v1">
+    return b"""<message>
         <header>
             <message_id>msg-001</message_id>
             <timestamp>2026-05-15T09:00:00Z</timestamp>

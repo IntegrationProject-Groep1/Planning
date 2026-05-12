@@ -14,19 +14,22 @@ params = pika.ConnectionParameters(
     credentials=credentials,
 )
 
-xml = f"""<message xmlns="urn:integration:planning:v1">
+xml = f"""<message>
     <header>
         <message_id>{uuid.uuid4()}</message_id>
         <timestamp>{datetime.now(timezone.utc).isoformat()}</timestamp>
-        <source>test</source>
-        <type>calendar.invite</type>
+        <source>frontend</source>
+        <type>calendar_invite</type>
+        <version>2.0</version>
     </header>
     <body>
+        <identity_uuid>e8b27c1d-4f2a-4b3e-9c5f-123456789abc</identity_uuid>
         <session_id>sess-test-001</session_id>
         <title>Test sessie</title>
         <start_datetime>2026-05-15T14:00:00Z</start_datetime>
         <end_datetime>2026-05-15T15:00:00Z</end_datetime>
         <location>online</location>
+        <attendee_email>test@example.be</attendee_email>
     </body>
 </message>"""
 

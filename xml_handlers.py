@@ -411,7 +411,7 @@ def build_session_created_xml(
     etree.SubElement(header, "timestamp").text = datetime.now(timezone.utc).isoformat()
     etree.SubElement(header, "source").text = "planning"
     etree.SubElement(header, "type").text = "session_created"
-    etree.SubElement(header, "version").text = "1.0"
+    etree.SubElement(header, "version").text = "2.0"
     etree.SubElement(header, "correlation_id").text = correlation_id or str(uuid.uuid4())
 
     # Body

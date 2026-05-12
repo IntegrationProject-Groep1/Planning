@@ -191,7 +191,7 @@ class TestBuildSessionCreatedXml:
         assert "<timestamp>" in xml
         assert "<source>planning</source>" in xml
         assert "<type>session_created</type>" in xml
-        assert "<version>1.0</version>" in xml
+        assert "<version>2.0</version>" in xml
         assert "<correlation_id>" in xml
 
     def test_build_session_created_xml_contains_body_fields(self):

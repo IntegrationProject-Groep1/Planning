@@ -78,3 +78,41 @@ def publish_log(channel, level: str, action: str, message: str) -> None:
         )
     except Exception as exc:
         logger.warning("Failed to publish log to '%s': %s", LOGS_QUEUE, exc)
+
+
+def publish_system_error(
+    channel,
+    error_code: str,
+    description: str,
+    related_message_id: str | None = None,
+) -> None:
+    """Publish a §2.6 system_error message to the planning.errors queue.
+
+    §2.5.1: called on XSD validation failure with error_code='invalid_xml_format'.
+    Failures are swallowed so a broken error queue never disrupts the main flow.
+    """
+    try:
+        root = etree.Element("message")
+        header = etree.SubElement(root, "header")
+        etree.SubElement(header, "message_id").text = str(uuid.uuid4())
+        etree.SubElement(header, "timestamp").text = datetime.now(timezone.utc).isoformat()
+        etree.SubElement(header, "source").text = _SOURCE
+        etree.SubElement(header, "type").text = "system_error"
+        etree.SubElement(header, "version").text = "2.0"
+        body = etree.SubElement(root, "body")
+        etree.SubElement(body, "error_code").text = error_code
+        etree.SubElement(body, "error_description").text = description
+        if related_message_id:
+            etree.SubElement(body, "related_message_id").text = related_message_id
+        xml = etree.tostring(root, encoding="unicode")
+        channel.basic_publish(
+            exchange="",
+            routing_key="planning.errors",
+            body=xml,
+            properties=pika.BasicProperties(
+                content_type="application/xml",
+                delivery_mode=2,
+            ),
+        )
+    except Exception as exc:
+        logger.warning("Failed to publish system_error: %s", exc)
