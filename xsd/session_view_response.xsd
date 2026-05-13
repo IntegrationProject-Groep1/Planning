@@ -49,7 +49,7 @@
                           <xs:element name="title"           type="xs:string"/>
                           <xs:element name="start_datetime"  type="xs:dateTime"/>
                           <xs:element name="end_datetime"    type="xs:dateTime"/>
-                          <xs:element name="location"        type="xs:string"/>
+                          <xs:element name="location"        type="xs:string" minOccurs="0"/>
                           <xs:element name="session_type"    type="xs:string"/>
                           <xs:element name="status"          type="xs:string"/>
                           <xs:element name="max_attendees"   type="xs:integer"/>

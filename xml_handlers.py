@@ -698,7 +698,7 @@ def build_user_sessions_response_xml(
         etree.SubElement(session_elem, "location").text = session.get("location") or ""
         etree.SubElement(session_elem, "session_type").text = session.get("session_type") or "other"
         etree.SubElement(session_elem, "status").text = session.get("status") or "published"
-        etree.SubElement(session_elem, "max_attendees").text = str(session.get("max_attendees") or 1)
+        etree.SubElement(session_elem, "max_attendees").text = str(session.get("max_attendees") or 0)
         etree.SubElement(session_elem, "current_attendees").text = str(session.get("current_attendees", 0))
         if session.get("price") is not None:
             price_elem = etree.SubElement(session_elem, "price")
