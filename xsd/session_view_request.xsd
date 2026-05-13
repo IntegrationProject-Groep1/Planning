@@ -18,6 +18,7 @@
                 <xs:simpleType><xs:restriction base="xs:string">
                   <xs:enumeration value="frontend"/>
                   <xs:enumeration value="crm"/>
+                  <xs:enumeration value="kassa"/>
                 </xs:restriction></xs:simpleType>
               </xs:element>
               <xs:element name="type">

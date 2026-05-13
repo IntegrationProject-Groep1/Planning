@@ -40,6 +40,7 @@ RABBITMQ_VHOST = os.getenv("RABBITMQ_VHOST", "/")
 CALENDAR_EXCHANGE = os.getenv("CALENDAR_EXCHANGE", "calendar.exchange")
 PLANNING_EXCHANGE = os.getenv("PLANNING_EXCHANGE", "planning.exchange")
 ROUTING_KEY_VIEW_RESPONSE = "planning.to.frontend.session.view.response"
+ROUTING_KEY_VIEW_RESPONSE_KASSA = "planning.to.kassa.session.view.response"
 CALENDAR_ROUTING_KEYS = [
     key.strip()
     for key in os.getenv(
@@ -57,6 +58,7 @@ SESSION_ROUTING_KEYS = [
             "frontend.to.planning.session.update,"
             "frontend.to.planning.session.delete,"
             "frontend.to.planning.session.view,"
+            "kassa.to.planning.session.view,"
             "crm.to.planning.session_registration_confirmed,"
             "kassa.to.planning.user_sessions_request,"
             "frontend.to.planning.user_sessions_request"
@@ -459,6 +461,7 @@ def handle_session_view_request(root: etree._Element, channel) -> None:
     body = root.find("body")
     requested_session_id = body.findtext("session_id", default="").strip()
     correlation_id = header.findtext("correlation_id") or header.findtext("message_id") or ""
+    source = header.findtext("source", default="").strip()
 
     response_type = "session_view_response"
 
@@ -475,10 +478,12 @@ def handle_session_view_request(root: etree._Element, channel) -> None:
         response_type=response_type
     )
 
+    routing_key = ROUTING_KEY_VIEW_RESPONSE_KASSA if source == "kassa" else ROUTING_KEY_VIEW_RESPONSE
+
     try:
         channel.basic_publish(
             exchange=PLANNING_EXCHANGE,
-            routing_key=ROUTING_KEY_VIEW_RESPONSE,
+            routing_key=routing_key,
             body=response_xml,
             properties=pika.BasicProperties(
                 content_type="application/xml",
@@ -487,13 +492,13 @@ def handle_session_view_request(root: etree._Element, channel) -> None:
         )
         # Log B — outbound message published
         publish_log(channel, "info", "session",
-                    f"Published session_view_response to {ROUTING_KEY_VIEW_RESPONSE}. "
+                    f"Published session_view_response to {routing_key}. "
                     f"CorrelationID: {correlation_id}.")
         logger.info(
             "session_view_request processed | requested_session_id=%s | returned=%d | routing_key=%s",
             requested_session_id or "*",
             len(sessions),
-            ROUTING_KEY_VIEW_RESPONSE,
+            routing_key,
         )
     except Exception as e:
         logger.error("Error publishing session_view_response: %s", e)
