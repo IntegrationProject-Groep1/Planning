@@ -62,6 +62,8 @@ _XSD_BY_TYPE = {
     "session_view_response": "session_view_response.xsd",
     "user_sessions_response": "user_sessions_response.xsd",
     "session_occupancy_update": "session_occupancy_update.xsd",
+    "calendar_invite": "calendar_invite.xsd",
+    "calendar_invite_confirmed": "calendar_invite_confirmed.xsd",
 }
 
 _REQUIRED_BODY_FIELDS: dict[str, set[str]] = {
