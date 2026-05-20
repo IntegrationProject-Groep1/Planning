@@ -20,6 +20,7 @@ class TestMessageLog:
         """Logging a new message should return True."""
         mock_conn = MagicMock()
         mock_cursor = MagicMock()
+        mock_cursor.rowcount = 1
         mock_conn.cursor.return_value = mock_cursor
         mock_get_conn.return_value = mock_conn
 
@@ -258,7 +259,7 @@ class TestSessionRegistrationService:
         )
 
         assert result is True
-        assert mock_cursor.execute.call_count == 3  # lookup + sessions insert + registrations insert
+        assert mock_cursor.execute.call_count == 2  # lookup + registrations insert
 
     @patch("calendar_service._get_connection")
     def test_register_unknown_user_returns_false(self, mock_get_conn):

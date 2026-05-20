@@ -45,7 +45,7 @@ def test_rabbitmq_connection():
         channel = connection.channel()
         
         print("\n✅ Verbinding succesvol!")
-        print(f"   Host: 127.0.0.1:5672")
+        print("   Host: 127.0.0.1:5672")
         print(f"   Channel: {channel.channel_number}")
         
         connection.close()
@@ -134,7 +134,7 @@ def test_message_send_receive():
         )
         
         corr_id = extract_correlation_id(test_message)
-        print(f"   ✓ Message published")
+        print("   ✓ Message published")
         print(f"   ✓ Correlation ID: {corr_id}")
         
         # Consume message
@@ -162,17 +162,17 @@ def test_message_send_receive():
             print("   ❌ No message received!")
             return False
         
-        print(f"   ✓ Message received")
+        print("   ✓ Message received")
         
         # Verify correlation_id
         received_corr_id = extract_correlation_id(received_message)
         print(f"   ✓ Received Correlation ID: {received_corr_id}")
         
         if corr_id != received_corr_id:
-            print(f"   ❌ Correlation IDs don't match!")
+            print("   ❌ Correlation IDs don't match!")
             return False
         
-        print(f"\n✅ Message successfully passed through RabbitMQ with same correlation_id!")
+        print("\n✅ Message successfully passed through RabbitMQ with same correlation_id!")
         return True
         
     except Exception as e:
@@ -201,11 +201,11 @@ def test_correlation_id_persistence():
         
         # Test 2: Retrieve same UUID
         uuid2 = MasterUUIDManager.get(SESSION_ID)
-        print(f"\n   Retrieved UUID:")
+        print("\n   Retrieved UUID:")
         print(f"   {uuid2}")
         
         if uuid1 != uuid2:
-            print(f"\n   ❌ UUIDs don't match!")
+            print("\n   ❌ UUIDs don't match!")
             return False
         
         # Test 3: Verify in file
@@ -215,12 +215,12 @@ def test_correlation_id_persistence():
                 data = json.load(f)
             
             if SESSION_ID in data and data[SESSION_ID] == uuid1:
-                print(f"\n   ✓ UUID correctly stored in .master_uuids.json")
+                print("\n   ✓ UUID correctly stored in .master_uuids.json")
             else:
-                print(f"\n   ❌ UUID not found in storage file!")
+                print("\n   ❌ UUID not found in storage file!")
                 return False
         
-        print(f"\n✅ Correlation ID persistence works correctly!")
+        print("\n✅ Correlation ID persistence works correctly!")
         return True
         
     except Exception as e:
@@ -237,7 +237,7 @@ def test_xml_validation_with_correlation_id():
     print("=" * 80)
     
     try:
-        from producer import create_session_xml, MasterUUIDManager
+        from producer import create_session_xml
         from consumer import validate_xml, handle_session_created
         
         SESSION_ID = "validation-test-session"
@@ -283,7 +283,7 @@ def test_xml_validation_with_correlation_id():
         handle_session_created(validated_root)
         print("   ✓ Message processed")
         
-        print(f"\n✅ XML validation and processing preserves correlation_id!")
+        print("\n✅ XML validation and processing preserves correlation_id!")
         return True
         
     except Exception as e:

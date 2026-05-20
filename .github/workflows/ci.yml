@@ -60,7 +60,8 @@ jobs:
         run: pip install pip-audit>=2.7.0
 
       - name: Audit dependencies
-        run: pip-audit -r requirements.txt
+        # PYSEC-2025-183 (PyJWT 2.12.1): no fix version exists yet — transitive dep of msal
+        run: pip-audit -r requirements.txt --ignore-vuln PYSEC-2025-183
 
   docker-build:
     name: Docker build check

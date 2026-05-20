@@ -6,7 +6,6 @@ Then open: http://localhost:8088
 """
 
 import os
-import json
 import logging
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from datetime import datetime, timezone

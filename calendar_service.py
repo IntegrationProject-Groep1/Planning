@@ -58,6 +58,23 @@ class UserService:
             return False
 
     @staticmethod
+    def get_by_email(email: str) -> Optional[Dict]:
+        try:
+            conn = _get_connection()
+            cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
+            cursor.execute(
+                "SELECT master_uuid, user_id::text, email FROM users WHERE email = %s",
+                (email,),
+            )
+            row = cursor.fetchone()
+            cursor.close()
+            conn.close()
+            return dict(row) if row else None
+        except psycopg2.Error as e:
+            logger.error("UserService.get_by_email failed: %s", e)
+            return None
+
+    @staticmethod
     def get_by_master_uuid(master_uuid: str) -> Optional[Dict]:
         try:
             conn = _get_connection()
@@ -150,6 +167,42 @@ class SessionService:
             return (-1, 0)
 
     @staticmethod
+    def get(session_id: str) -> Optional[Dict]:
+        try:
+            conn = _get_connection()
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT * FROM sessions WHERE session_id = %s AND is_deleted = FALSE",
+                (session_id,),
+            )
+            row = cursor.fetchone()
+            cursor.close()
+            conn.close()
+            return row
+        except psycopg2.Error as e:
+            logger.error("SessionService.get failed: %s", e)
+            return None
+
+    @staticmethod
+    def list_all(limit: Optional[int] = None) -> List[Dict]:
+        try:
+            conn = _get_connection()
+            cursor = conn.cursor()
+            query = "SELECT * FROM sessions WHERE is_deleted = FALSE ORDER BY start_datetime"
+            params: tuple = ()
+            if limit is not None:
+                query += " LIMIT %s"
+                params = (limit,)
+            cursor.execute(query, params)
+            rows = cursor.fetchall()
+            cursor.close()
+            conn.close()
+            return rows
+        except psycopg2.Error as e:
+            logger.error("SessionService.list_all failed: %s", e)
+            return []
+
+    @staticmethod
     def decrement_attendees(session_id: str):
         try:
             conn = _get_connection()
@@ -222,6 +275,29 @@ class SessionRegistrationService:
         except psycopg2.Error as e:
             logger.error("SessionRegistrationService.cancel failed: %s", e)
             return False
+
+
+    @staticmethod
+    def list_for_session(session_id: str) -> List[Dict]:
+        try:
+            conn = _get_connection()
+            cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
+            cursor.execute(
+                """
+                SELECT sr.session_id, u.user_id::text, u.master_uuid, u.email, sr.status
+                FROM session_registrations sr
+                INNER JOIN users u ON u.user_id = sr.user_id
+                WHERE sr.session_id = %s
+                """,
+                (session_id,),
+            )
+            rows = cursor.fetchall()
+            cursor.close()
+            conn.close()
+            return [dict(row) for row in rows]
+        except psycopg2.Error as e:
+            logger.error("SessionRegistrationService.list_for_session failed: %s", e)
+            return []
 
 
 class IcsFeedService:
@@ -329,7 +405,7 @@ class MessageLog:
             return False
 
     @staticmethod
-    def update_message_status(message_id: str, status: str) -> None:
+    def update_message_status(message_id: str, status: str) -> bool:
         try:
             conn = _get_connection()
             cursor = conn.cursor()
@@ -340,5 +416,24 @@ class MessageLog:
             conn.commit()
             cursor.close()
             conn.close()
+            return True
         except psycopg2.Error as e:
             logger.error("MessageLog.update_message_status failed: %s", e)
+            return False
+
+    @staticmethod
+    def get_message(message_id: str) -> Optional[Dict]:
+        try:
+            conn = _get_connection()
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT * FROM message_log WHERE message_id = %s",
+                (message_id,),
+            )
+            row = cursor.fetchone()
+            cursor.close()
+            conn.close()
+            return row
+        except psycopg2.Error as e:
+            logger.error("MessageLog.get_message failed: %s", e)
+            return None

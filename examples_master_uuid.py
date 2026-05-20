@@ -49,7 +49,7 @@ keynote_created = create_session_xml(
     current_attendees=0
 )
 info = extract_message_info(keynote_created)
-print(f"✓ Keynote aangemaakt")
+print("✓ Keynote aangemaakt")
 print(f"  Type: {info['message_type']}")
 print(f"  Session ID: {info['session_id']}")
 print(f"  Correlation ID: {info['correlation_id']}")
@@ -64,7 +64,7 @@ keynote_updated_1 = create_session_updated_xml(
     current_attendees=150
 )
 info = extract_message_info(keynote_updated_1)
-print(f"✓ Attendees bijgewerkt (150)")
+print("✓ Attendees bijgewerkt (150)")
 print(f"  Type: {info['message_type']}")
 print(f"  Correlation ID: {info['correlation_id']}")
 
@@ -79,7 +79,7 @@ keynote_updated_2 = create_session_updated_xml(
     status="sold_out"
 )
 info = extract_message_info(keynote_updated_2)
-print(f"✓ Status bijgewerkt naar SOLD OUT")
+print("✓ Status bijgewerkt naar SOLD OUT")
 print(f"  Type: {info['message_type']}")
 print(f"  Correlation ID: {info['correlation_id']}")
 
@@ -109,7 +109,7 @@ workshop_created = create_session_xml(
 )
 info = extract_message_info(workshop_created)
 corr_id_workshop = info['correlation_id']
-print(f"✓ Workshop aangemaakt")
+print("✓ Workshop aangemaakt")
 print(f"  Correlation ID: {corr_id_workshop}")
 
 print("\n📝 STAP 2: Locatie wijzigen")
@@ -122,7 +122,7 @@ workshop_moved = create_session_updated_xml(
     current_attendees=15
 )
 info = extract_message_info(workshop_moved)
-print(f"✓ Locatie gewijzigd naar Room 401")
+print("✓ Locatie gewijzigd naar Room 401")
 print(f"  Correlation ID: {info['correlation_id']}")
 
 print("\n📝 STAP 3: Annuleren vanwege instructeur ziekte")
@@ -132,7 +132,7 @@ workshop_cancelled = create_session_deleted_xml(
     deleted_by="event_coordinator@planning.service"
 )
 info = extract_message_info(workshop_cancelled)
-print(f"✓ Workshop geannuleerd")
+print("✓ Workshop geannuleerd")
 print(f"  Correlation ID: {info['correlation_id']}")
 
 print("\n" + "=" * 80)
@@ -190,7 +190,7 @@ print("🔍 ANALYSE:")
 unique_ids = len(set(correlation_ids.values()))
 print(f"  Totaal sessies: {len(sessions)}")
 print(f"  Unieke correlation_ids: {unique_ids}")
-print(f"  ✓ Elke sessie heeft zijn eigen correlation_id!")
+print("  ✓ Elke sessie heeft zijn eigen correlation_id!")
 print("=" * 80)
 
 

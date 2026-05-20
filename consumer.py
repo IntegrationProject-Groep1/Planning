@@ -355,7 +355,15 @@ def handle_calendar_invite(msg: CalendarInviteMessage, channel, delivery_tag: in
 
 
 def handle_session_created(msg: SessionCreatedMessage, channel, delivery_tag: int) -> None:
-    """Process a validated session_created message — update in-memory cache."""
+    """Process a validated session_created message — persist to DB and update in-memory cache."""
+    is_new = MessageLog.log_message(
+        msg.header.message_id, "session_created",
+        source=msg.header.source, timestamp=msg.header.timestamp,
+        correlation_id=msg.header.correlation_id,
+    )
+    if not is_new:
+        channel.basic_ack(delivery_tag=delivery_tag)
+        return
     try:
         payload = {
             "session_id": msg.body.session_id,
@@ -368,11 +376,14 @@ def handle_session_created(msg: SessionCreatedMessage, channel, delivery_tag: in
             "max_attendees": msg.body.max_attendees or 0,
             "current_attendees": msg.body.current_attendees or 0,
         }
+        SessionService.create_or_update(**payload)
         upsert_session(payload)
+        MessageLog.update_message_status(msg.header.message_id, "processed")
         channel.basic_ack(delivery_tag=delivery_tag)
     except Exception as e:
         logger.error("Error handling session_created: %s", e)
         publish_log(channel, "error", "system_error", f"Internal Error in handle_session_created: {e}")
+        MessageLog.update_message_status(msg.header.message_id, "failed")
         channel.basic_nack(delivery_tag=delivery_tag, requeue=False)
 
 

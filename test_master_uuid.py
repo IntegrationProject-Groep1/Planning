@@ -77,7 +77,7 @@ def test_master_uuid_consistency():
     all_same = (correlation_id_created == correlation_id_updated == correlation_id_deleted)
     
     if all_same:
-        print(f"✅ SUCCES: Alle berichten hebben dezelfde Master UUID!")
+        print("✅ SUCCES: Alle berichten hebben dezelfde Master UUID!")
         print(f"   Master UUID: {correlation_id_created}")
         return True
     else:
