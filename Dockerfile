@@ -1,7 +1,12 @@
-FROM python:3.12.10-slim
+FROM python:3.13-slim
 
 LABEL org.opencontainers.image.source="https://github.com/IntegrationProject-Groep1/infra"
 
+# Upgrade OS packages to pick up latest security patches (fixes Trivy CRITICAL/HIGH CVEs).
+RUN apt-get update \
+    && apt-get upgrade -y \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
