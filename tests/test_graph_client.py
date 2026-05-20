@@ -4,7 +4,7 @@ All HTTP calls and MSAL token acquisition are mocked — no real network traffic
 """
 
 import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 from graph_client import GraphClient, GraphClientError
 
 

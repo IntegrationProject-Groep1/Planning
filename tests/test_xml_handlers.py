@@ -2,7 +2,6 @@
 Tests for XML parsing and validation (xml_handlers.py).
 """
 
-import pytest
 from xml_handlers import (
     parse_calendar_invite,
     parse_session_create_request,

@@ -21,7 +21,7 @@ from xml_models import (
     SessionDeleteRequestMessage,
 )
 from graph_service import GraphService
-from log_publisher import publish_log, publish_system_error, action_for_type
+from log_publisher import publish_log, publish_system_error
 from calendar_service import MessageLog, SessionService, SessionRegistrationService, UserService, IcsFeedService
 
 load_dotenv()
@@ -137,7 +137,7 @@ def _load_schema(schema_filename: str) -> etree.XMLSchema:
 def validate_xml(body: bytes) -> etree._Element | None:
     """Parse and validate incoming XML. Returns root element or None on failure."""
     try:
-        root_with_ns = etree.fromstring(body)
+        etree.fromstring(body)
     except etree.XMLSyntaxError as e:
         logger.error("Malformed XML: %s", e)
         return None

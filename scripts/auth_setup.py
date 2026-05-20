@@ -16,7 +16,7 @@ import os
 
 import msal
 from dotenv import load_dotenv
-from flask import Flask, redirect, request, url_for
+from flask import Flask, redirect, request
 
 load_dotenv()
 

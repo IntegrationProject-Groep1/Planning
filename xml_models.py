@@ -5,7 +5,6 @@ Represents all message types according to XSD specifications.
 
 from dataclasses import dataclass, asdict
 from typing import Optional, List
-from datetime import datetime
 
 
 # ============================================================================

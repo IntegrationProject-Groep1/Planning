@@ -5,7 +5,6 @@ Database service for planning/calendar integration — PostgreSQL via psycopg2.
 import psycopg2
 import psycopg2.extras
 import logging
-import uuid
 from typing import Optional, Dict, List
 from enum import Enum
 from db_config import get_db_config

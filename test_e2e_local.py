@@ -6,7 +6,6 @@ import pika
 import json
 import time
 import logging
-import threading
 from lxml import etree
 from pathlib import Path
 

@@ -2,8 +2,7 @@
 Tests for producer.py - message publishing to RabbitMQ.
 """
 
-import pytest
-from unittest.mock import patch, MagicMock, call
+from unittest.mock import patch
 from producer import (
     publish_session_created,
     publish_session_updated,

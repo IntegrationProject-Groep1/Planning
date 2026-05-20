@@ -35,7 +35,7 @@ PLANNING_XSDS = {
 
 def normalize(text: str) -> str:
     """Strip trailing whitespace per line and remove trailing blank lines."""
-    lines = [l.rstrip() for l in text.split('\n')]
+    lines = [line.rstrip() for line in text.split('\n')]
     while lines and not lines[-1]:
         lines.pop()
     return '\n'.join(lines)

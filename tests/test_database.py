@@ -2,16 +2,13 @@
 Tests for database service (calendar_service.py).
 """
 
-import pytest
-from unittest.mock import patch, MagicMock, call
+from unittest.mock import patch, MagicMock
 import psycopg2
 from calendar_service import (
     MessageLog,
     SessionService,
     SessionRegistrationService,
     UserService,
-    IcsFeedService,
-    MessageStatus,
 )
 
 

@@ -14,7 +14,6 @@ from consumer import (
     handle_calendar_invite,
     handle_session_create_request,
     handle_session_created,
-    handle_session_deleted,
     route_message,
 )
 
@@ -44,32 +43,6 @@ def sample_calendar_invite_message():
             location="Room A",
         ),
     )
-
-    def test_session_updated_message_returns_element(self):
-        result = validate_xml(_make_updated_body())
-        assert result is not None
-
-    def test_session_created_message_returns_element(self):
-        result = validate_xml(_make_created_body())
-        assert result is not None
-
-    def test_session_deleted_message_returns_element(self):
-        result = validate_xml(_make_deleted_body())
-        assert result is not None
-
-    def test_session_view_request_without_body_fields_returns_element(self):
-        result = validate_xml(_make_view_request_body())
-        assert result is not None
-
-    def test_unsupported_type_returns_none(self):
-        xml = b"""<message>
-            <header>
-                <message_id>x</message_id><timestamp>x</timestamp>
-                <source>x</source><type>unknown_type</type>
-            </header>
-            <body><session_id>x</session_id></body>
-        </message>"""
-        assert validate_xml(xml) is None
 
 
 class TestHandleCalendarInvite:

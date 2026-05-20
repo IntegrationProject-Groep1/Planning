@@ -2,8 +2,12 @@
 End-to-end test: create session + user + calendar invite + ICS feed
 Run: python test_e2e.py
 """
-import pika, uuid, time, sys, threading
-import urllib.request, json
+import pika
+import uuid
+import time
+import threading
+import urllib.request
+import json
 from datetime import datetime, timezone
 
 # ── Config ────────────────────────────────────────────────────────────────────

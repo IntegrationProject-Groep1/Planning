@@ -4,7 +4,7 @@ GraphClient and DB calls are mocked — no real network or database traffic.
 """
 
 import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 from graph_service import GraphService
 from graph_client import GraphClientError
 

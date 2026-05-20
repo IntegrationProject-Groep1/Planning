@@ -3,8 +3,6 @@ Pytest configuration and shared fixtures for Planning service tests.
 """
 
 import pytest
-from datetime import datetime, timezone
-import json
 
 
 # ============================================================================

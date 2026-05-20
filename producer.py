@@ -262,9 +262,6 @@ def _load_schema(schema_filename: str) -> etree.XMLSchema:
 
 def validate_xml(xml_string: str) -> bool:
     try:
-        root_with_ns = etree.fromstring(xml_string.encode("utf-8"))
-
-        # Keep generic XML validation behavior for non-message payloads.
         root = _strip_ns(etree.fromstring(xml_string.encode("utf-8")))
         message_type = root.findtext("header/type")
         if not message_type:
