@@ -1,0 +1,15 @@
+[run]
+omit =
+    .venv/*
+    dashboard.py
+    init_db.py
+    validate_xsd_contract.py
+    examples_master_uuid.py
+    test_e2e.py
+    test_e2e_local.py
+    test_master_uuid.py
+
+[report]
+exclude_lines =
+    pragma: no cover
+    if __name__ == .__main__.:
